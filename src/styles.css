@@ -178,4 +178,15 @@
   .sbs-scroll.dragging { cursor: grabbing; user-select: none; }
   .sbs-canvas-wrap { padding: 24px; display: inline-flex; min-width: 100%; min-height: 100%; align-items: center; justify-content: center; }
   .sbs-canvas-wrap canvas { display: block; box-shadow: 0 4px 20px rgba(0,0,0,0.3); border-radius: 4px; background: #fff; }
+  .sbs-crosshair {
+    display: none; position: absolute; z-index: 15; pointer-events: none;
+    width: 20px; height: 20px; transform: translate(-50%, -50%);
+  }
+  .sbs-crosshair::before, .sbs-crosshair::after {
+    content: ''; position: absolute; background: rgba(255,255,255,0.85);
+    border-radius: 1px;
+  }
+  .sbs-crosshair::before { width: 2px; height: 100%; left: 50%; transform: translateX(-50%); }
+  .sbs-crosshair::after { height: 2px; width: 100%; top: 50%; transform: translateY(-50%); }
+  .sbs-crosshair.visible { display: block; }
   .sbs-divider { width: 3px; flex-shrink: 0; background: var(--border); }
