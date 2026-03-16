@@ -80,7 +80,6 @@ Edit files in `src/`, then rebuild. The build produces a byte-identical output.
 - LRU array uses `indexOf()` which is O(n) per access
 - No input validation on PPI (user can set extreme values)
 - Export-all modifies global `currentPage` state without try-finally guard
-- Side-by-side mode ignores negative X offset on the new layer
 - Thumbnail rendering doesn't reflect per-page scale settings
 
 ## Testing
