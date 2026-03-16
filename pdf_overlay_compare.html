@@ -170,6 +170,22 @@
   }
   .thumb-toggle:hover { color: var(--text); background: var(--surface2); }
   .thumb-toggle.shifted { left: 420px; }
+
+  /* Dual-pane side-by-side */
+  .sbs-wrapper { display: none; flex: 1; flex-direction: row; height: 100%; overflow: hidden; }
+  .sbs-wrapper.show { display: flex; }
+  .sbs-pane { flex: 1; display: flex; flex-direction: column; min-width: 0; position: relative; }
+  .sbs-label {
+    position: absolute; top: 8px; left: 12px; z-index: 10;
+    font-family: 'DM Sans', sans-serif; font-size: 13px; font-weight: 700;
+    padding: 3px 10px; border-radius: 6px;
+    background: rgba(0,0,0,0.55); color: #fff; pointer-events: none;
+  }
+  .sbs-scroll { flex: 1; overflow: auto; cursor: grab; background: var(--bg); }
+  .sbs-scroll.dragging { cursor: grabbing; user-select: none; }
+  .sbs-canvas-wrap { padding: 24px; display: inline-flex; min-width: 100%; min-height: 100%; align-items: center; justify-content: center; }
+  .sbs-canvas-wrap canvas { display: block; box-shadow: 0 4px 20px rgba(0,0,0,0.3); border-radius: 4px; background: #fff; }
+  .sbs-divider { width: 3px; flex-shrink: 0; background: var(--border); }
 </style>
 
 <!-- Inlined libraries — no CDN dependency, no tracking prevention issues -->
@@ -744,10 +760,10 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         <div class="cache-bar-bg"><div class="cache-bar" id="cache-bar"></div></div>
         <div class="cache-text" id="cache-status">No pages cached</div>
         <div class="mem-est" id="mem-est"></div>
-        <div class="cache-range-row" style="margin-top:3px;">
-          <span class="offset-range-label">Limit</span>
-          <input type="number" class="cache-range-input" id="mem-limit" value="4096" min="256" step="256" style="width:58px;" onchange="changeMemLimit()" />
-          <span class="offset-range-label">MB</span>
+        <div style="margin-top:6px;">
+          <div class="control-row"><span class="control-label" style="font-size:11px;">Memory Limit</span><span class="control-value" id="mem-limit-val">4096 MB</span></div>
+          <input type="range" id="mem-limit" min="256" max="8192" step="256" value="4096" oninput="changeMemLimit()" style="width:100%;" />
+          <div class="offset-hint">Controls how much RAM is used for cached page renders. Higher = faster page switching but more memory. Lower if your browser slows down.</div>
         </div>
         <div class="cache-controls">
           <div class="cache-range-row"><span class="offset-range-label">From</span><input type="number" class="cache-range-input" id="cache-from" value="1" min="1" /><span class="offset-range-label">to</span><input type="number" class="cache-range-input" id="cache-to" value="1" min="1" /></div>
@@ -811,6 +827,22 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         <canvas id="canvas-output"></canvas>
       </div>
     </div>
+    <!-- Dual-pane side-by-side (hidden by default, shown in sidebyside mode) -->
+    <div class="sbs-wrapper" id="sbs-wrapper" style="display:none;">
+      <div class="sbs-pane" id="sbs-pane-old">
+        <div class="sbs-label" id="sbs-label-old">OLD</div>
+        <div class="sbs-scroll" id="sbs-scroll-old">
+          <div class="sbs-canvas-wrap"><canvas id="sbs-canvas-old"></canvas></div>
+        </div>
+      </div>
+      <div class="sbs-divider"></div>
+      <div class="sbs-pane" id="sbs-pane-new">
+        <div class="sbs-label" id="sbs-label-new">NEW</div>
+        <div class="sbs-scroll" id="sbs-scroll-new">
+          <div class="sbs-canvas-wrap"><canvas id="sbs-canvas-new"></canvas></div>
+        </div>
+      </div>
+    </div>
   </div>
 </div>
 <div class="zoom-bar" id="zoom-bar">
@@ -852,7 +884,7 @@ const DOM = {
   btnPrev: $('btn-prev'), btnNext: $('btn-next'),
   cacheBar: $('cache-bar'), cacheStatus: $('cache-status'), memEst: $('mem-est'),
   cacheIndicator: $('cache-indicator'),
-  cacheFrom: $('cache-from'), cacheTo: $('cache-to'), memLimit: $('mem-limit'),
+  cacheFrom: $('cache-from'), cacheTo: $('cache-to'), memLimit: $('mem-limit'), memLimitVal: $('mem-limit-val'),
   offsetX: $('offset-x'), offsetY: $('offset-y'),
   offsetXSlider: $('offset-x-slider'), offsetYSlider: $('offset-y-slider'),
   offsetRange: $('offset-range'), offsetScope: $('offset-scope'),
@@ -860,6 +892,11 @@ const DOM = {
   thumbScroll: $('thumb-scroll'), thumbPPIInput: $('thumb-ppi'),
   presetGrid: $('preset-grid'),
   loadInput: $('load-input'),
+  // Side-by-side dual pane
+  sbsWrapper: $('sbs-wrapper'),
+  sbsScrollOld: $('sbs-scroll-old'), sbsScrollNew: $('sbs-scroll-new'),
+  sbsCanvasOld: $('sbs-canvas-old'), sbsCanvasNew: $('sbs-canvas-new'),
+  sbsLabelOld: $('sbs-label-old'), sbsLabelNew: $('sbs-label-new'),
 };
 
 // ═══════════════════════════════════════
@@ -895,6 +932,7 @@ let thumbPanelOpen = false;
 let thumbRendering = false;
 
 let _compositeScheduled = false;
+let _sbsSyncLock = false; // prevents scroll-sync infinite loop
 
 const _tmpCanvasA = document.createElement('canvas');
 const _tmpCanvasB = document.createElement('canvas');
@@ -903,14 +941,15 @@ const _tmpCtxB = _tmpCanvasB.getContext('2d');
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 function isInputFocused() { const t = document.activeElement?.tagName; return t === 'INPUT' || t === 'SELECT' || t === 'TEXTAREA'; }
+function debounce(fn, ms) { let t; return function(...a) { clearTimeout(t); t = setTimeout(() => fn.apply(this, a), ms); }; }
 
 // ═══════════════════════════════════════
 //  CACHE MEMORY LIMIT (incremental tracking)
 // ═══════════════════════════════════════
 function changeMemLimit() {
   const v = Math.max(256, parseInt(DOM.memLimit.value) || 4096);
-  DOM.memLimit.value = v;
   cacheMemLimitMB = v;
+  DOM.memLimitVal.textContent = v >= 1024 ? (v/1024).toFixed(1).replace(/\.0$/,'') + ' GB' : v + ' MB';
   let safety = lruOrder.length + 2;
   while (_trackedCacheBytes > cacheMemLimitMB * 1048576 && lruOrder.length > 1 && safety-- > 0) {
     const oldest = lruOrder[0];
@@ -1021,6 +1060,7 @@ function applyDefaults(d) {
   DOM.thumbPPIInput.value = thumbPPI;
   cacheMemLimitMB = d.memLimitMB || 4096;
   DOM.memLimit.value = cacheMemLimitMB;
+  changeMemLimit();
   DOM.inputScaleOld.value = d.scaleOld || 100;
   DOM.inputScaleNew.value = d.scaleNew || 100;
   DOM.sliderScaleOld.value = Math.max(25, Math.min(200, d.scaleOld || 100));
@@ -1169,6 +1209,8 @@ DOM.canvasArea.addEventListener('drop', e => {
 
 async function loadPdf(file, which) {
   cacheAbort = true;
+  await sleep(20);
+  cacheAbort = false;
   const nameEl = which === 'old' ? DOM.nameOld : DOM.nameNew;
   const zoneEl = which === 'old' ? DOM.zoneOld : DOM.zoneNew;
   nameEl.textContent = file.name;
@@ -1205,6 +1247,14 @@ async function runCompare() {
   DOM.placeholder.style.display = 'none';
   DOM.canvasContainer.style.display = 'block';
   DOM.zoomBar.classList.add('show');
+  // Set correct layout for current mode
+  if (mode === 'sidebyside') {
+    DOM.canvasPad.style.display = 'none';
+    DOM.sbsWrapper.style.display = 'flex';
+  } else {
+    DOM.canvasPad.style.display = '';
+    DOM.sbsWrapper.style.display = 'none';
+  }
   maxPages = Math.max(pdfOld.numPages, pdfNew.numPages);
   currentPage = 1;
   const ppi = parseInt(DOM.ppiSelect.value);
@@ -1252,9 +1302,9 @@ function updateCacheUI() {
       const cls = (isPageCached(p)?'cached ':'') + (p===currentPage?'active':'');
       html += `<div class="cache-dot ${cls}" data-page="${p}" title="Page ${p}${isPageCached(p)?' (cached)':''}">${p}</div>`;
     }
-    indicator.innerHTML = html;
+    DOM.cacheIndicator.innerHTML = html;
   } else if (total > 60) {
-    indicator.innerHTML = `<span style="font-size:9px;color:var(--text-dim);">${cached}/${total} pages — use range cache</span>`;
+    DOM.cacheIndicator.innerHTML = `<span style="font-size:9px;color:var(--text-dim);">${cached}/${total} pages — use range cache</span>`;
   }
 }
 DOM.cacheIndicator.addEventListener('click', e => {
@@ -1439,7 +1489,6 @@ function composite(w, h, imgO, imgN) {
 
   if (mode === 'overlay') {
     const totalW = Math.max(wO, wN + absOx), totalH = Math.max(hO, hN + absOy);
-    // Expand to account for offset in negative direction too
     const canvasW = Math.max(wO + (ox < 0 ? absOx : 0), wN + (ox > 0 ? ox : 0), totalW);
     const canvasH = Math.max(hO + (oy < 0 ? absOy : 0), hN + (oy > 0 ? oy : 0), totalH);
     const oldDx = ox<0?absOx:0, oldDy = oy<0?absOy:0;
@@ -1451,20 +1500,39 @@ function composite(w, h, imgO, imgN) {
     if (imgN && visNew) { ctx.globalAlpha=aN; ctx.drawImage(putImgToTempCanvas(imgN,_tmpCanvasB,_tmpCtxB),0,0,imgN.width,imgN.height,newDx,newDy,wN,hN); }
     ctx.globalAlpha = 1;
   } else {
-    const gap = 20;
-    const rW = Math.max(wN+absOx, wO), rH = Math.max(hN+absOy, hO);
-    const leftW = Math.max(wO, wN);
-    out.width = leftW+gap+rW; out.height = Math.max(hO, hN, rH);
+    // Side-by-side: render to two separate canvases
+    const cOld = DOM.sbsCanvasOld, cNew = DOM.sbsCanvasNew;
+    // Old pane
+    if (imgO && visOld) {
+      cOld.width = wO; cOld.height = hO;
+      const ctxO = cOld.getContext('2d');
+      ctxO.fillStyle = '#fff'; ctxO.fillRect(0,0,wO,hO);
+      ctxO.globalAlpha = aO;
+      ctxO.drawImage(putImgToTempCanvas(imgO,_tmpCanvasA,_tmpCtxA),0,0,imgO.width,imgO.height,0,0,wO,hO);
+      ctxO.globalAlpha = 1;
+    } else { cOld.width = 1; cOld.height = 1; }
+    // New pane (with offset)
+    if (imgN && visNew) {
+      const nw = wN + absOx, nh = hN + absOy;
+      cNew.width = nw; cNew.height = nh;
+      const ctxN = cNew.getContext('2d');
+      ctxN.fillStyle = '#fff'; ctxN.fillRect(0,0,nw,nh);
+      ctxN.globalAlpha = aN;
+      ctxN.drawImage(putImgToTempCanvas(imgN,_tmpCanvasB,_tmpCtxB),0,0,imgN.width,imgN.height, ox>=0?ox:0, oy>=0?oy:0, wN,hN);
+      ctxN.globalAlpha = 1;
+    } else { cNew.width = 1; cNew.height = 1; }
+    // Update labels with colors
+    DOM.sbsLabelOld.style.background = DOM.colorOld.value;
+    DOM.sbsLabelNew.style.background = DOM.colorNew.value;
+    // Also render to the main output canvas for export
+    out.width = Math.max(wO, wN); out.height = Math.max(hO, hN);
     const ctx = out.getContext('2d');
-    ctx.fillStyle = '#e8e8e8'; ctx.fillRect(0,0,out.width,out.height);
-    ctx.fillStyle = '#fff'; ctx.fillRect(0,0,leftW,out.height); ctx.fillRect(leftW+gap,0,rW,rH);
-    if (imgO && visOld) { ctx.globalAlpha=aO; ctx.drawImage(putImgToTempCanvas(imgO,_tmpCanvasA,_tmpCtxA),0,0,imgO.width,imgO.height,0,0,wO,hO); }
-    if (imgN && visNew) { ctx.globalAlpha=aN; ctx.drawImage(putImgToTempCanvas(imgN,_tmpCanvasB,_tmpCtxB),0,0,imgN.width,imgN.height,leftW+gap+ox,oy,wN,hN); }
+    ctx.fillStyle = '#fff'; ctx.fillRect(0,0,out.width,out.height);
+    if (imgO && visOld) { ctx.globalAlpha=aO; ctx.drawImage(cOld,0,0); }
+    if (imgN && visNew) { ctx.globalAlpha=aN; ctx.drawImage(cNew,0,0); }
     ctx.globalAlpha = 1;
-    ctx.font = 'bold 24px DM Sans';
-    ctx.fillStyle = DOM.colorOld.value; ctx.fillText('OLD',16,34);
-    ctx.fillStyle = DOM.colorNew.value; ctx.fillText('NEW',leftW+gap+16,34);
   }
+  applySbsZoom();
   applyZoom();
 }
 
@@ -1478,11 +1546,30 @@ function applyZoom() {
   DOM.canvasPad.style.minWidth = (dw+48)+'px'; DOM.canvasPad.style.minHeight = (dh+48)+'px';
   DOM.zoomLabel.textContent = Math.round(currentZoom*getRenderScale()*100)+'%';
 }
-function doZoom(delta) { currentZoom = Math.max(0.03, Math.min(5, currentZoom+delta)); applyZoom(); }
+function applySbsZoom() {
+  if (mode !== 'sidebyside') return;
+  // Scale the SBS canvases via CSS width/height
+  const cO = DOM.sbsCanvasOld, cN = DOM.sbsCanvasNew;
+  cO.style.width = (cO.width*currentZoom)+'px'; cO.style.height = (cO.height*currentZoom)+'px';
+  cN.style.width = (cN.width*currentZoom)+'px'; cN.style.height = (cN.height*currentZoom)+'px';
+}
+function doZoom(delta) {
+  currentZoom = Math.max(0.03, Math.min(5, currentZoom+delta));
+  applyZoom(); applySbsZoom();
+}
 function zoomFit() {
-  if (!DOM.canvasOutput.width||!DOM.canvasOutput.height) return;
-  currentZoom = Math.min((DOM.canvasArea.clientWidth-64)/DOM.canvasOutput.width, (DOM.canvasArea.clientHeight-64)/DOM.canvasOutput.height);
-  applyZoom();
+  if (mode === 'sidebyside') {
+    // Fit to one pane (half the area width)
+    const paneW = DOM.canvasArea.clientWidth / 2 - 30;
+    const paneH = DOM.canvasArea.clientHeight - 64;
+    const cW = Math.max(DOM.sbsCanvasOld.width, DOM.sbsCanvasNew.width, 1);
+    const cH = Math.max(DOM.sbsCanvasOld.height, DOM.sbsCanvasNew.height, 1);
+    currentZoom = Math.min(paneW / cW, paneH / cH);
+  } else {
+    if (!DOM.canvasOutput.width||!DOM.canvasOutput.height) return;
+    currentZoom = Math.min((DOM.canvasArea.clientWidth-64)/DOM.canvasOutput.width, (DOM.canvasArea.clientHeight-64)/DOM.canvasOutput.height);
+  }
+  applyZoom(); applySbsZoom();
 }
 
 // ═══════════════════════════════════════
@@ -1543,6 +1630,16 @@ function setMode(m) {
   mode = m;
   DOM.modeOverlay.classList.toggle('active', m==='overlay');
   DOM.modeSidebyside.classList.toggle('active', m==='sidebyside');
+  // Toggle between single-canvas overlay and dual-pane side-by-side
+  if (hasRenderedOnce) {
+    if (m === 'sidebyside') {
+      DOM.canvasPad.style.display = 'none';
+      DOM.sbsWrapper.style.display = 'flex';
+    } else {
+      DOM.canvasPad.style.display = '';
+      DOM.sbsWrapper.style.display = 'none';
+    }
+  }
   if (rawOld || rawNew) recolorAndComposite();
 }
 function toggleVis(which) {
@@ -1550,13 +1647,14 @@ function toggleVis(which) {
   syncColors();
   if (rawOld || rawNew) recolorAndComposite();
 }
-function _onColorChange() {
+const _onColorChange = debounce(() => {
   DOM.presetGrid.querySelectorAll('.preset-pill').forEach(el => el.classList.remove('selected'));
   invalidateRecolor(); syncColors();
   if (rawOld || rawNew) recolorAndComposite();
-}
-DOM.colorOld.addEventListener('input', _onColorChange);
-DOM.colorNew.addEventListener('input', _onColorChange);
+}, 80);
+// Immediate UI feedback for swatches, debounced recolor for performance
+DOM.colorOld.addEventListener('input', () => { syncColors(); _onColorChange(); });
+DOM.colorNew.addEventListener('input', () => { syncColors(); _onColorChange(); });
 
 async function changePPI() {
   if (!pdfOld&&!pdfNew) return; if (!rawOld&&!rawNew) return;
@@ -1737,6 +1835,8 @@ async function loadPreset(e) {
     maxPages=Math.max(pdfOld.numPages,pdfNew.numPages); currentPage=p.currentPage||1; if(currentPage>maxPages) currentPage=1;
     cachePPI=parseInt(DOM.ppiSelect.value); cacheOld={}; cacheNew={}; lruOrder=[]; lruSet=new Set(); _trackedCacheBytes=0;
     DOM.placeholder.style.display='none'; DOM.canvasContainer.style.display='block'; DOM.zoomBar.classList.add('show');
+    if (mode === 'sidebyside') { DOM.canvasPad.style.display = 'none'; DOM.sbsWrapper.style.display = 'flex'; }
+    else { DOM.canvasPad.style.display = ''; DOM.sbsWrapper.style.display = 'none'; }
     DOM.btnCompare.disabled=false; DOM.btnCompare.textContent='Rendering page '+currentPage+'…'; await sleep(30);
     invalidateRecolor(); syncColors(); loadOffsetUI();
     hasRenderedOnce=false; await renderPage(currentPage); updatePageNav(); updateCacheUI();
@@ -1828,14 +1928,82 @@ async function exportAllPNG() {
 }
 
 // ═══════════════════════════════════════
-//  DRAG-TO-PAN + WHEEL ZOOM
+//  DRAG-TO-PAN + WHEEL ZOOM (overlay mode)
 // ═══════════════════════════════════════
 (function(){
   const area=DOM.canvasArea; let drag=false,sx,sy,sl,st;
-  area.addEventListener('mousedown',e=>{if(e.target.closest('.zoom-bar'))return;drag=true;area.classList.add('dragging');sx=e.clientX;sy=e.clientY;sl=area.scrollLeft;st=area.scrollTop;e.preventDefault();});
+  area.addEventListener('mousedown',e=>{
+    if(e.target.closest('.zoom-bar')||e.target.closest('.sbs-wrapper'))return;
+    drag=true;area.classList.add('dragging');sx=e.clientX;sy=e.clientY;sl=area.scrollLeft;st=area.scrollTop;e.preventDefault();
+  });
   window.addEventListener('mousemove',e=>{if(!drag)return;area.scrollLeft=sl-(e.clientX-sx);area.scrollTop=st-(e.clientY-sy);});
   window.addEventListener('mouseup',()=>{if(!drag)return;drag=false;area.classList.remove('dragging');});
-  area.addEventListener('wheel',e=>{if(!DOM.canvasOutput.width)return;e.preventDefault();const d=e.deltaY>0?-0.1:0.1,rect=area.getBoundingClientRect(),mx=e.clientX-rect.left+area.scrollLeft,my=e.clientY-rect.top+area.scrollTop,old=currentZoom;currentZoom=Math.max(0.03,Math.min(5,currentZoom+d));const r=currentZoom/old;applyZoom();area.scrollLeft=mx*r-(e.clientX-rect.left);area.scrollTop=my*r-(e.clientY-rect.top);},{passive:false});
+  area.addEventListener('wheel',e=>{
+    if(mode==='sidebyside')return; // SBS has its own zoom
+    if(!DOM.canvasOutput.width)return;e.preventDefault();
+    const d=e.deltaY>0?-0.1:0.1,rect=area.getBoundingClientRect(),mx=e.clientX-rect.left+area.scrollLeft,my=e.clientY-rect.top+area.scrollTop,old=currentZoom;
+    currentZoom=Math.max(0.03,Math.min(5,currentZoom+d));const r=currentZoom/old;
+    applyZoom();area.scrollLeft=mx*r-(e.clientX-rect.left);area.scrollTop=my*r-(e.clientY-rect.top);
+  },{passive:false});
+})();
+
+// ═══════════════════════════════════════
+//  SIDE-BY-SIDE: SYNCED SCROLL + DRAG + WHEEL ZOOM
+// ═══════════════════════════════════════
+(function(){
+  const sO = DOM.sbsScrollOld, sN = DOM.sbsScrollNew;
+
+  // Scroll sync: when one pane scrolls, mirror to the other
+  function syncScroll(source, target) {
+    if (_sbsSyncLock) return;
+    _sbsSyncLock = true;
+    target.scrollLeft = source.scrollLeft;
+    target.scrollTop = source.scrollTop;
+    _sbsSyncLock = false;
+  }
+  sO.addEventListener('scroll', () => syncScroll(sO, sN));
+  sN.addEventListener('scroll', () => syncScroll(sN, sO));
+
+  // Drag-to-pan for each pane (synced via scroll events above)
+  function initPaneDrag(pane) {
+    let drag=false, sx, sy, sl, st;
+    pane.addEventListener('mousedown', e => {
+      drag=true; pane.classList.add('dragging');
+      sx=e.clientX; sy=e.clientY; sl=pane.scrollLeft; st=pane.scrollTop;
+      e.preventDefault();
+    });
+    window.addEventListener('mousemove', e => {
+      if(!drag) return;
+      pane.scrollLeft = sl-(e.clientX-sx);
+      pane.scrollTop = st-(e.clientY-sy);
+    });
+    window.addEventListener('mouseup', () => {
+      if(!drag) return; drag=false; pane.classList.remove('dragging');
+    });
+  }
+  initPaneDrag(sO);
+  initPaneDrag(sN);
+
+  // Wheel zoom on either SBS pane
+  function sbsWheelZoom(e) {
+    if(mode !== 'sidebyside') return;
+    e.preventDefault();
+    const d = e.deltaY > 0 ? -0.1 : 0.1;
+    const old = currentZoom;
+    currentZoom = Math.max(0.03, Math.min(5, currentZoom + d));
+    const r = currentZoom / old;
+    applySbsZoom();
+    DOM.zoomLabel.textContent = Math.round(currentZoom*getRenderScale()*100)+'%';
+    // Adjust scroll to keep zoom centered on cursor for the pane being scrolled
+    const pane = e.currentTarget;
+    const rect = pane.getBoundingClientRect();
+    const mx = e.clientX - rect.left + pane.scrollLeft;
+    const my = e.clientY - rect.top + pane.scrollTop;
+    pane.scrollLeft = mx*r - (e.clientX - rect.left);
+    pane.scrollTop = my*r - (e.clientY - rect.top);
+  }
+  sO.addEventListener('wheel', sbsWheelZoom, {passive:false});
+  sN.addEventListener('wheel', sbsWheelZoom, {passive:false});
 })();
 
 // ═══════════════════════════════════════
