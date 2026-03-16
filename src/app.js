@@ -46,6 +46,7 @@ const DOM = {
   sbsDrawOld: $('sbs-draw-old'), sbsDrawNew: $('sbs-draw-new'),
   drawToolbar: $('draw-toolbar'),
   drawColor: $('draw-color'), drawWidth: $('draw-width'),
+  xhairColor: $('xhair-color'), xhairSize: $('xhair-size'),
 };
 
 // ═══════════════════════════════════════
@@ -1183,19 +1184,32 @@ async function exportAllPNG() {
     const ctx = canvas.getContext('2d');
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     if (x < 0) return; // hidden
-    ctx.strokeStyle = 'rgba(255,255,255,0.7)';
-    ctx.lineWidth = 1;
-    ctx.setLineDash([4, 4]);
+    const color = DOM.xhairColor.value;
+    const sz = parseInt(DOM.xhairSize.value); // 1=S, 2=M, 3=L
+    const lw = sz;
+    const dotR = 2 + sz * 2;
+    const dash = [3 + sz, 3 + sz];
+    // Dark outline pass for contrast
+    ctx.strokeStyle = 'rgba(0,0,0,0.5)';
+    ctx.lineWidth = lw + 2;
+    ctx.setLineDash(dash);
+    ctx.beginPath();
+    ctx.moveTo(x, 0); ctx.lineTo(x, canvas.height);
+    ctx.moveTo(0, y); ctx.lineTo(canvas.width, y);
+    ctx.stroke();
+    // Colored pass
+    ctx.strokeStyle = color;
+    ctx.lineWidth = lw;
     ctx.beginPath();
     ctx.moveTo(x, 0); ctx.lineTo(x, canvas.height);
     ctx.moveTo(0, y); ctx.lineTo(canvas.width, y);
     ctx.stroke();
     ctx.setLineDash([]);
-    // small dot at intersection
-    ctx.fillStyle = 'rgba(255,255,255,0.9)';
-    ctx.beginPath();
-    ctx.arc(x, y, 3, 0, Math.PI * 2);
-    ctx.fill();
+    // Dot at intersection: outline + fill
+    ctx.fillStyle = 'rgba(0,0,0,0.5)';
+    ctx.beginPath(); ctx.arc(x, y, dotR + 1, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = color;
+    ctx.beginPath(); ctx.arc(x, y, dotR, 0, Math.PI * 2); ctx.fill();
   }
   function clearXhair(canvas) {
     const ctx = canvas.getContext('2d');
@@ -1369,8 +1383,10 @@ window.addEventListener('keydown',e=>{
   if(e.key==='p'&&!e.ctrlKey&&!e.metaKey){setDrawTool('pen');return;}
   if(e.key==='l'||e.key==='L'){setDrawTool('line');return;}
   if(e.key==='a'&&!e.ctrlKey&&!e.metaKey){setDrawTool('arrow');return;}
+  if(e.key==='h'&&!e.ctrlKey&&!e.metaKey){setDrawTool('highlight');return;}
   if(e.key==='r'&&!e.ctrlKey&&!e.metaKey){setDrawTool('rect');return;}
   if(e.key==='t'&&!e.ctrlKey&&!e.metaKey){setDrawTool('text');return;}
+  if(e.key==='e'&&!e.ctrlKey&&!e.metaKey){setDrawTool('eraser');return;}
   if((e.ctrlKey||e.metaKey)&&e.key==='z'){e.preventDefault();drawUndo();return;}
   if(maxPages<=1) return;
   if(e.key==='ArrowLeft'||e.key==='PageUp'){e.preventDefault();changePage(-1);}
@@ -1393,7 +1409,7 @@ function syncDrawLayerSize(side) {
 }
 function setDrawTool(tool) {
   drawTool = tool;
-  ['pan','pen','line','arrow','rect','text'].forEach(t => {
+  ['pan','pen','line','arrow','highlight','rect','text','eraser'].forEach(t => {
     const btn = document.getElementById('draw-tool-' + t);
     if (btn) btn.classList.toggle('active', t === tool);
   });
@@ -1448,13 +1464,29 @@ function renderDrawLayer(side) {
 }
 
 function drawStrokeToCtx(ctx, s) {
+  ctx.save();
   ctx.strokeStyle = s.color;
   ctx.fillStyle = s.color;
   ctx.lineWidth = s.width;
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
+  ctx.globalAlpha = 1;
+  if (s.tool === 'highlight') {
+    // Semi-transparent wide stroke
+    ctx.globalAlpha = 0.35;
+    ctx.lineWidth = Math.max(s.width * 10, 20);
+    ctx.lineCap = 'butt';
+    if (s.pts && s.pts.length >= 2) {
+      ctx.beginPath();
+      ctx.moveTo(s.pts[0].x, s.pts[0].y);
+      for (let i = 1; i < s.pts.length; i++) ctx.lineTo(s.pts[i].x, s.pts[i].y);
+      ctx.stroke();
+    }
+    ctx.restore();
+    return;
+  }
   if (s.tool === 'pen') {
-    if (s.pts.length < 2) return;
+    if (s.pts.length < 2) { ctx.restore(); return; }
     ctx.beginPath();
     ctx.moveTo(s.pts[0].x, s.pts[0].y);
     for (let i = 1; i < s.pts.length; i++) ctx.lineTo(s.pts[i].x, s.pts[i].y);
@@ -1487,6 +1519,42 @@ function drawStrokeToCtx(ctx, s) {
     ctx.font = `${fontSize}px 'DM Sans', sans-serif`;
     ctx.fillText(s.text, s.x1, s.y1);
   }
+  ctx.restore();
+}
+
+// Hit-test: does a stroke come within `radius` of point (px, py)?
+function strokeHitsPoint(s, px, py, radius) {
+  const r2 = radius * radius;
+  if (s.tool === 'pen' || s.tool === 'highlight') {
+    for (const pt of s.pts) {
+      if ((pt.x - px) ** 2 + (pt.y - py) ** 2 < r2) return true;
+    }
+  } else if (s.tool === 'line' || s.tool === 'arrow') {
+    if (distToSegment2(px, py, s.x1, s.y1, s.x2, s.y2) < r2) return true;
+  } else if (s.tool === 'rect') {
+    const x1 = Math.min(s.x1, s.x2), y1 = Math.min(s.y1, s.y2);
+    const x2 = Math.max(s.x1, s.x2), y2 = Math.max(s.y1, s.y2);
+    // Check 4 edges
+    if (distToSegment2(px, py, x1, y1, x2, y1) < r2) return true;
+    if (distToSegment2(px, py, x2, y1, x2, y2) < r2) return true;
+    if (distToSegment2(px, py, x2, y2, x1, y2) < r2) return true;
+    if (distToSegment2(px, py, x1, y2, x1, y1) < r2) return true;
+  } else if (s.tool === 'text') {
+    const fontSize = Math.max(14, s.width * 6);
+    if (px >= s.x1 && px <= s.x1 + fontSize * s.text.length * 0.6 &&
+        py >= s.y1 - fontSize && py <= s.y1) return true;
+  }
+  return false;
+}
+
+function distToSegment2(px, py, x1, y1, x2, y2) {
+  const dx = x2 - x1, dy = y2 - y1;
+  const lenSq = dx * dx + dy * dy;
+  if (lenSq === 0) return (px - x1) ** 2 + (py - y1) ** 2;
+  let t = ((px - x1) * dx + (py - y1) * dy) / lenSq;
+  t = Math.max(0, Math.min(1, t));
+  const nx = x1 + t * dx, ny = y1 + t * dy;
+  return (px - nx) ** 2 + (py - ny) ** 2;
 }
 
 // Wire up drawing on SBS draw layers
@@ -1494,7 +1562,7 @@ function initDrawLayer(drawCanvas, scrollPane, side) {
   let drawing = false;
 
   drawCanvas.addEventListener('mousedown', e => {
-    if (drawTool === 'pan') return;
+    if (drawTool === 'pan' || e.button !== 0) return; // only left-click draws
     e.preventDefault(); e.stopPropagation();
     const pos = clientToCanvas(e, scrollPane, drawCanvas);
     const color = DOM.drawColor.value;
@@ -1509,9 +1577,15 @@ function initDrawLayer(drawCanvas, scrollPane, side) {
       return;
     }
 
+    if (drawTool === 'eraser') {
+      drawing = true;
+      _drawCurrent = { tool: 'eraser', pts: [pos], width, side };
+      return;
+    }
+
     drawing = true;
-    if (drawTool === 'pen') {
-      _drawCurrent = { tool: 'pen', pts: [pos], color, width, side };
+    if (drawTool === 'pen' || drawTool === 'highlight') {
+      _drawCurrent = { tool: drawTool, pts: [pos], color, width, side };
     } else {
       _drawCurrent = { tool: drawTool, x1: pos.x, y1: pos.y, x2: null, y2: null, color, width, side };
     }
@@ -1520,7 +1594,20 @@ function initDrawLayer(drawCanvas, scrollPane, side) {
   window.addEventListener('mousemove', e => {
     if (!drawing || !_drawCurrent || _drawCurrent.side !== side) return;
     const pos = clientToCanvas(e, scrollPane, drawCanvas);
-    if (_drawCurrent.tool === 'pen') {
+    if (_drawCurrent.tool === 'eraser') {
+      _drawCurrent.pts.push(pos);
+      // Erase strokes that intersect with the eraser path
+      const eraserR = Math.max(_drawCurrent.width * 5, 10);
+      const strokes = drawStrokesFor(side);
+      for (let i = strokes.length - 1; i >= 0; i--) {
+        if (strokeHitsPoint(strokes[i], pos.x, pos.y, eraserR)) {
+          strokes.splice(i, 1);
+        }
+      }
+      renderDrawLayer(side);
+      return;
+    }
+    if (_drawCurrent.tool === 'pen' || _drawCurrent.tool === 'highlight') {
       _drawCurrent.pts.push(pos);
     } else {
       _drawCurrent.x2 = pos.x;
@@ -1535,8 +1622,9 @@ function initDrawLayer(drawCanvas, scrollPane, side) {
     // Only save if there's meaningful content
     const s = _drawCurrent;
     let valid = false;
-    if (s.tool === 'pen' && s.pts.length >= 2) valid = true;
+    if ((s.tool === 'pen' || s.tool === 'highlight') && s.pts && s.pts.length >= 2) valid = true;
     if ((s.tool === 'line' || s.tool === 'arrow' || s.tool === 'rect') && s.x2 != null) valid = true;
+    if (s.tool === 'eraser') valid = false; // eraser removes inline, nothing to save
     if (valid) {
       const saved = { ...s };
       delete saved.side;
@@ -1549,6 +1637,9 @@ function initDrawLayer(drawCanvas, scrollPane, side) {
 
 initDrawLayer(DOM.sbsDrawOld, DOM.sbsScrollOld, 'old');
 initDrawLayer(DOM.sbsDrawNew, DOM.sbsScrollNew, 'new');
+// Prevent context menu on draw layers so right-click doesn't interfere
+DOM.sbsDrawOld.addEventListener('contextmenu', e => e.preventDefault());
+DOM.sbsDrawNew.addEventListener('contextmenu', e => e.preventDefault());
 
 function drawUndo() {
   // Undo last stroke from whichever side was drawn last

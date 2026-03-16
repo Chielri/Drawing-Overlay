@@ -216,3 +216,7 @@
     background: var(--surface2); color: var(--text); font-family: 'JetBrains Mono', monospace;
     font-size: 10px; cursor: pointer; outline: none;
   }
+  .draw-group-label {
+    font-size: 9px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px;
+    color: var(--text-dim); white-space: nowrap;
+  }
