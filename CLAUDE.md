@@ -6,8 +6,8 @@ A single-file web application for comparing two PDF document revisions via color
 
 ## Architecture
 
-- **Single HTML file**: `pdf_overlay_compare.html` (~1960 lines, ~1.9MB)
-- **No build system** — open directly in a browser
+- **Output**: `pdf_overlay_compare.html` — single self-contained file (~2MB), open directly in a browser
+- **Source**: Unpacked into `src/` for readability; `build.sh` packs back into the single HTML
 - **Inlined libraries**: PDF.js (rendering), jsPDF (PDF export), JSZip (ZIP export)
 - **Rendering**: HTML5 Canvas 2D context with pixel-level recoloring
 - **State**: Global variables, no framework — vanilla JS
@@ -24,12 +24,24 @@ A single-file web application for comparing two PDF document revisions via color
 ## File Structure
 
 ```
-pdf_overlay_compare.html   # The entire application
-├── <style>                # Lines 7-173: CSS design system (dark theme, CSS vars)
-├── <script> (libraries)   # Lines 176-627: Inlined PDF.js, jsPDF, JSZip
-├── <body>                 # Lines 628-821: HTML structure (sidebar, canvas, thumbnails)
-└── <script> (app)         # Lines 823-1960: Application JavaScript
+pdf_overlay_compare.html     # Built output (do not edit directly)
+build.sh                     # Packs src/ into the single HTML file
+src/
+├── index.html               # HTML template with __INJECT__ markers
+├── styles.css               # CSS design system (dark theme, CSS vars)
+├── body.html                # HTML structure (sidebar, canvas, thumbnails)
+├── app.js                   # Application JavaScript (~1300 lines)
+└── vendor/
+    ├── pdfjs.js             # PDF.js library
+    ├── jspdf.js             # jsPDF library
+    ├── jszip.js             # JSZip library
+    └── pdfjs-worker-blob.js # PDF.js worker (loaded via Blob URL)
 ```
+
+## Build
+
+Run `./build.sh` to regenerate `pdf_overlay_compare.html` from source files.
+Edit files in `src/`, then rebuild. The build produces a byte-identical output.
 
 ## CSS Design System
 
@@ -37,7 +49,7 @@ pdf_overlay_compare.html   # The entire application
 - Fonts: DM Sans (UI), JetBrains Mono (values/code)
 - Layout: Fixed 280px sidebar + flexible canvas area + collapsible 140px thumbnail panel
 
-## Application Code Sections (lines 823+)
+## Application Code Sections (src/app.js)
 
 | Section | Purpose |
 |---------|---------|
