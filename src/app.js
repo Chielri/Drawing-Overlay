@@ -305,11 +305,15 @@ function syncColors() {
   const cOld = DOM.colorOld.value, cNew = DOM.colorNew.value;
   if (DOM.zoneOld.classList.contains('has-file')) { DOM.zoneOld.style.borderColor = cOld; DOM.zoneOld.style.background = hexToDim(cOld); }
   if (DOM.zoneNew.classList.contains('has-file')) { DOM.zoneNew.style.borderColor = cNew; DOM.zoneNew.style.background = hexToDim(cNew); }
-  DOM.swatchOld.style.background = cOld;
-  DOM.swatchNew.style.background = cNew;
   const oA = parseInt(DOM.sliderOpacityOld.value)/100;
   const oB = parseInt(DOM.sliderOpacityNew.value)/100;
-  const ov = blendOverlap(hexToRgb(cOld), oA, hexToRgb(cNew), oB);
+  const rgbOld = hexToRgb(cOld), rgbNew = hexToRgb(cNew);
+  // Show opacity-adjusted colors over white so legend matches canvas appearance
+  const sO = [Math.round(255*(1-oA)+rgbOld[0]*oA), Math.round(255*(1-oA)+rgbOld[1]*oA), Math.round(255*(1-oA)+rgbOld[2]*oA)];
+  const sN = [Math.round(255*(1-oB)+rgbNew[0]*oB), Math.round(255*(1-oB)+rgbNew[1]*oB), Math.round(255*(1-oB)+rgbNew[2]*oB)];
+  DOM.swatchOld.style.background = `rgb(${sO[0]},${sO[1]},${sO[2]})`;
+  DOM.swatchNew.style.background = `rgb(${sN[0]},${sN[1]},${sN[2]})`;
+  const ov = blendOverlap(rgbOld, oA, rgbNew, oB);
   DOM.swatchOverlap.style.background = `rgb(${ov[0]},${ov[1]},${ov[2]})`;
   DOM.visOldBtn.classList.toggle('active', visOld); DOM.visNewBtn.classList.toggle('active', visNew);
   if (visOld) { DOM.visOldBtn.style.color=cOld; DOM.visOldBtn.style.borderColor=cOld; DOM.visOldBtn.style.background=hexToDim(cOld); }
