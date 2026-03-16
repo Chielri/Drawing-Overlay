@@ -667,9 +667,17 @@ function composite(w, h, imgO, imgN) {
   if (mode === 'overlay') {
     if (xform) {
       // Affine transform mode: old stays fixed, new is transformed
-      // Canvas is sized to old image (the reference frame)
-      const canvasW = Math.max(wO, wN * 2) | 0;
-      const canvasH = Math.max(hO, hN * 2) | 0;
+      // Compute bounding box of transformed new image to size canvas
+      const corners = [[0,0],[imgN.width,0],[0,imgN.height],[imgN.width,imgN.height]];
+      let minX=0, minY=0, maxX=wO, maxY=hO;
+      corners.forEach(([px,py]) => {
+        const cx = xform.a*sN*px + xform.b*sN*py + xform.e;
+        const cy = xform.c*sN*px + xform.d*sN*py + xform.f;
+        maxX = Math.max(maxX, cx); maxY = Math.max(maxY, cy);
+        minX = Math.min(minX, cx); minY = Math.min(minY, cy);
+      });
+      const canvasW = Math.ceil(maxX - minX);
+      const canvasH = Math.ceil(maxY - minY);
       out.width = canvasW; out.height = canvasH;
       const ctx = out.getContext('2d');
       ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, canvasW, canvasH);
@@ -1531,11 +1539,14 @@ function cancelAlign3() {
 
 function clearAlign3() {
   const scope = DOM.transformScope.value;
-  if (scope === 'all') { pageTransforms = {}; }
-  else { clearPageTransform(currentPage); }
-  // Also reset offset & scale for affected pages since transform replaces them
+  if (scope === 'all') {
+    pageOffsets = {}; pageScales = {}; pageRotations = {}; pageTransforms = {};
+  } else {
+    const p = String(currentPage);
+    delete pageOffsets[p]; delete pageScales[p]; delete pageRotations[p]; delete pageTransforms[p];
+  }
   cancelAlign3();
-  DOM.align3Clear.style.display = 'none';
+  loadTransformUI();
   if (rawOld || rawNew) recolorAndComposite();
   scheduleThumbRefresh();
 }
@@ -1543,14 +1554,18 @@ function clearAlign3() {
 function updateAlign3UI() {
   const el = DOM.align3Status;
   const pts = DOM.align3Points;
-  const hasTransform = !!getPageTransform(currentPage);
+  // Check if any transform values have been set (offset, scale, rotation, or affine)
+  const off = getPageOffset(currentPage);
+  const ps = getPageScale(currentPage);
+  const rot = getPageRotation(currentPage);
+  const hasTransform = !!getPageTransform(currentPage) || off.x !== 0 || off.y !== 0 || ps.old !== 100 || ps.new !== 100 || rot !== 0;
 
   if (!align3Active && !hasTransform) {
     el.textContent = 'Pick 3 matching point pairs to align PDFs.';
     el.className = 'align3-status';
     DOM.align3Clear.style.display = 'none';
   } else if (!align3Active && hasTransform) {
-    el.textContent = 'Alignment active for this page.';
+    el.textContent = 'Alignment applied — values shown in Scale/Translation/Rotation.';
     el.className = 'align3-status done';
     DOM.align3Clear.style.display = '';
   } else if (align3Phase === 'old') {
@@ -1727,11 +1742,43 @@ function computeAndApplyAlign3() {
   // Snap tiny rotations (<1°) caused by imprecise clicking
   transform = snapAffineRotation(transform);
 
+  // Decompose affine into rotation, scale, and translation
+  const rotRad = Math.atan2(transform.c, transform.a);
+  const rotDeg = Math.round(rotRad * 180 / Math.PI * 100) / 100;
+  const sx = Math.sqrt(transform.a * transform.a + transform.c * transform.c);
+  const sy = Math.sqrt(transform.b * transform.b + transform.d * transform.d);
+  const uniformScale = (sx + sy) / 2;
+
+  // Compute new per-layer scale
+  const ps = getPageScale(currentPage);
+  const sN = ps.new / 100;
+  const sN_new = sN * uniformScale;
+  const scaleNewPercent = Math.round(ps.new * uniformScale * 10) / 10;
+
+  // Compute offset from affine translation, accounting for rotation around image center
+  // Standard composite path: pixel (px,py) → rotate around center → place at offset
+  //   canvas = R * (sN_new * pixel - center) + (offset + center)
+  // Affine: canvas = [[a,b],[c,d]] * sN * pixel + (e, f)
+  // Matching constants: offset = (e,f) + R*center - center  where center = (wN_new/2, hN_new/2)
+  const imgW = rawNew.width, imgH = rawNew.height;
+  const wN_new = imgW * sN_new, hN_new = imgH * sN_new;
+  const cosR = Math.cos(rotRad), sinR = Math.sin(rotRad);
+  const cx = wN_new / 2, cy = hN_new / 2;
+  const ox = Math.round((transform.e + cosR * cx - sinR * cy - cx) * 10) / 10;
+  const oy = Math.round((transform.f + sinR * cx + cosR * cy - cy) * 10) / 10;
+
+  // Apply decomposed values to offset/scale/rotation (not raw affine)
   const scope = DOM.transformScope.value;
   if (scope === 'all') {
-    for (let p = 1; p <= maxPages; p++) setPageTransform(p, transform);
+    for (let p = 1; p <= maxPages; p++) {
+      setPageOffset(p, ox, oy);
+      setPageRotation(p, rotDeg);
+      setPageScale(p, ps.old, scaleNewPercent);
+    }
   } else {
-    setPageTransform(currentPage, transform);
+    setPageOffset(currentPage, ox, oy);
+    setPageRotation(currentPage, rotDeg);
+    setPageScale(currentPage, ps.old, scaleNewPercent);
   }
 
   // End picking mode
@@ -1741,8 +1788,9 @@ function computeAndApplyAlign3() {
   DOM.align3Overlay.classList.remove('picking');
   drawAlign3Markers();
   updateAlign3UI();
+  loadTransformUI();
 
-  // Re-render with the new transform
+  // Re-render with decomposed transform values
   if (rawOld || rawNew) recolorAndComposite();
   scheduleThumbRefresh();
 }
