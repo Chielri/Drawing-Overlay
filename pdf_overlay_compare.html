@@ -772,7 +772,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       <div class="section-title">Save / Load</div>
       <div class="save-row">
         <button class="save-btn primary" onclick="savePreset()">💾 Save Preset</button>
-        <button class="save-btn" onclick="document.getElementById('load-input').click()">📂 Load Preset<input type="file" id="load-input" accept=".json" onchange="loadPreset(event)" /></button>
+        <button class="save-btn" onclick="DOM.loadInput.click()">📂 Load Preset<input type="file" id="load-input" accept=".json" onchange="loadPreset(event)" /></button>
       </div>
       <div class="save-row" style="margin-top:4px;">
         <button class="save-btn" onclick="exportPNG()">📷 PNG</button>
@@ -824,6 +824,45 @@ https://github.com/nodeca/pako/blob/main/LICENSE
 pdfjsLib.GlobalWorkerOptions.workerSrc = window.__pdfWorkerBlobURL;
 
 // ═══════════════════════════════════════
+//  CACHED DOM REFERENCES
+// ═══════════════════════════════════════
+const $ = id => document.getElementById(id);
+const DOM = {
+  colorOld: $('color-old'), colorNew: $('color-new'),
+  zoneOld: $('zone-old'), zoneNew: $('zone-new'),
+  nameOld: $('name-old'), nameNew: $('name-new'),
+  iconOld: $('icon-old'), iconNew: $('icon-new'),
+  swatchOld: $('swatch-old'), swatchNew: $('swatch-new'), swatchOverlap: $('swatch-overlap'),
+  visOldBtn: $('vis-old'), visNewBtn: $('vis-new'),
+  labelColorOld: $('label-color-old'), labelColorNew: $('label-color-new'),
+  labelOpacityOld: $('label-opacity-old'), labelOpacityNew: $('label-opacity-new'),
+  labelScaleOld: $('label-scale-old'), labelScaleNew: $('label-scale-new'),
+  sliderOpacityOld: $('slider-opacity-old'), sliderOpacityNew: $('slider-opacity-new'),
+  valOpacityOld: $('val-opacity-old'), valOpacityNew: $('val-opacity-new'),
+  sliderScaleOld: $('slider-scale-old'), sliderScaleNew: $('slider-scale-new'),
+  inputScaleOld: $('input-scale-old'), inputScaleNew: $('input-scale-new'),
+  scaleScope: $('scale-scope'),
+  ppiSelect: $('ppi-select'),
+  btnCompare: $('btn-compare'),
+  modeOverlay: $('mode-overlay'), modeSidebyside: $('mode-sidebyside'),
+  placeholder: $('placeholder'), canvasContainer: $('canvas-container'),
+  canvasOutput: $('canvas-output'), canvasArea: $('canvas-area'), canvasPad: $('canvas-pad'),
+  zoomBar: $('zoom-bar'), zoomLabel: $('zoom-label'),
+  pageGoto: $('page-goto'), pageTotal: $('page-total'),
+  btnPrev: $('btn-prev'), btnNext: $('btn-next'),
+  cacheBar: $('cache-bar'), cacheStatus: $('cache-status'), memEst: $('mem-est'),
+  cacheIndicator: $('cache-indicator'),
+  cacheFrom: $('cache-from'), cacheTo: $('cache-to'), memLimit: $('mem-limit'),
+  offsetX: $('offset-x'), offsetY: $('offset-y'),
+  offsetXSlider: $('offset-x-slider'), offsetYSlider: $('offset-y-slider'),
+  offsetRange: $('offset-range'), offsetScope: $('offset-scope'),
+  thumbPanel: $('thumb-panel'), thumbToggle: $('thumb-toggle'),
+  thumbScroll: $('thumb-scroll'), thumbPPIInput: $('thumb-ppi'),
+  presetGrid: $('preset-grid'),
+  loadInput: $('load-input'),
+};
+
+// ═══════════════════════════════════════
 //  STATE
 // ═══════════════════════════════════════
 let pdfOld = null, pdfNew = null;
@@ -837,14 +876,14 @@ let cacheOld = {}, cacheNew = {};
 let cachePPI = 0;
 let cacheAbort = false;
 let pageOffsets = {};
-let pageScales = {};  // { pageNum: { old: 100, new: 100 } }
+let pageScales = {};
 let hasRenderedOnce = false;
 
-// LRU cache management
+// LRU cache management — uses a Set for O(1) has/delete + Array for order
 let lruOrder = [];
+let lruSet = new Set();
 let cacheMemLimitMB = 512;
 
-// FIX #1: Incremental byte tracking — avoid O(n) scan on every evict check
 let _trackedCacheBytes = 0;
 
 // Thumbnail state
@@ -855,23 +894,22 @@ let thumbTimer = null;
 let thumbPanelOpen = false;
 let thumbRendering = false;
 
-// FIX #2: rAF gate — prevents composite queue buildup from rapid slider events
 let _compositeScheduled = false;
 
-// FIX #3: reusable temp canvases to avoid GC pressure (one per layer)
 const _tmpCanvasA = document.createElement('canvas');
 const _tmpCanvasB = document.createElement('canvas');
 const _tmpCtxA = _tmpCanvasA.getContext('2d');
 const _tmpCtxB = _tmpCanvasB.getContext('2d');
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+function isInputFocused() { const t = document.activeElement?.tagName; return t === 'INPUT' || t === 'SELECT' || t === 'TEXTAREA'; }
 
 // ═══════════════════════════════════════
 //  CACHE MEMORY LIMIT (incremental tracking)
 // ═══════════════════════════════════════
 function changeMemLimit() {
-  const v = Math.max(256, parseInt(document.getElementById('mem-limit').value) || 4096);
-  document.getElementById('mem-limit').value = v;
+  const v = Math.max(256, parseInt(DOM.memLimit.value) || 4096);
+  DOM.memLimit.value = v;
   cacheMemLimitMB = v;
   let safety = lruOrder.length + 2;
   while (_trackedCacheBytes > cacheMemLimitMB * 1048576 && lruOrder.length > 1 && safety-- > 0) {
@@ -896,20 +934,25 @@ function _recomputeCacheBytes() {
 
 function touchLRU(page) {
   const p = String(page);
-  const idx = lruOrder.indexOf(p);
-  if (idx !== -1) lruOrder.splice(idx, 1);
+  if (lruSet.has(p)) {
+    const idx = lruOrder.indexOf(p);
+    if (idx !== -1) lruOrder.splice(idx, 1);
+  }
   lruOrder.push(p);
+  lruSet.add(p);
 }
 
 function evictPage(page) {
   const p = String(page);
-  // Subtract bytes before deleting
   if (cacheOld[p]) _trackedCacheBytes -= cacheOld[p].data.byteLength;
   if (cacheNew[p]) _trackedCacheBytes -= cacheNew[p].data.byteLength;
   delete cacheOld[p];
   delete cacheNew[p];
-  const idx = lruOrder.indexOf(p);
-  if (idx !== -1) lruOrder.splice(idx, 1);
+  if (lruSet.has(p)) {
+    const idx = lruOrder.indexOf(p);
+    if (idx !== -1) lruOrder.splice(idx, 1);
+    lruSet.delete(p);
+  }
 }
 
 function evictUntilFits(newBytes) {
@@ -960,47 +1003,44 @@ function getDefaults() {
 }
 
 function applyDefaults(d) {
-  document.getElementById('color-old').value = d.colorOld;
-  document.getElementById('color-new').value = d.colorNew;
-  document.getElementById('slider-opacity-old').value = d.opacityOld;
-  document.getElementById('slider-opacity-new').value = d.opacityNew;
-  document.getElementById('val-opacity-old').textContent = d.opacityOld + '%';
-  document.getElementById('val-opacity-new').textContent = d.opacityNew + '%';
-  document.getElementById('ppi-select').value = d.ppi;
+  DOM.colorOld.value = d.colorOld;
+  DOM.colorNew.value = d.colorNew;
+  DOM.sliderOpacityOld.value = d.opacityOld;
+  DOM.sliderOpacityNew.value = d.opacityNew;
+  DOM.valOpacityOld.textContent = d.opacityOld + '%';
+  DOM.valOpacityNew.textContent = d.opacityNew + '%';
+  DOM.ppiSelect.value = d.ppi;
   mode = d.mode;
-  document.getElementById('mode-overlay').classList.toggle('active', mode === 'overlay');
-  document.getElementById('mode-sidebyside').classList.toggle('active', mode === 'sidebyside');
+  DOM.modeOverlay.classList.toggle('active', mode === 'overlay');
+  DOM.modeSidebyside.classList.toggle('active', mode === 'sidebyside');
   visOld = d.visOld; visNew = d.visNew;
-  document.getElementById('offset-range').value = d.offsetRange;
+  DOM.offsetRange.value = d.offsetRange;
   updateSliderRange();
-  document.getElementById('offset-scope').value = d.offsetScope;
+  DOM.offsetScope.value = d.offsetScope;
   thumbPPI = d.thumbPPI || 18;
-  document.getElementById('thumb-ppi').value = thumbPPI;
+  DOM.thumbPPIInput.value = thumbPPI;
   cacheMemLimitMB = d.memLimitMB || 4096;
-  document.getElementById('mem-limit').value = cacheMemLimitMB;
-  document.getElementById('input-scale-old').value = d.scaleOld || 100;
-  document.getElementById('input-scale-new').value = d.scaleNew || 100;
-  document.getElementById('slider-scale-old').value = Math.max(25, Math.min(200, d.scaleOld || 100));
-  document.getElementById('slider-scale-new').value = Math.max(25, Math.min(200, d.scaleNew || 100));
-  document.getElementById('scale-scope').value = d.scaleScope || 'page';
+  DOM.memLimit.value = cacheMemLimitMB;
+  DOM.inputScaleOld.value = d.scaleOld || 100;
+  DOM.inputScaleNew.value = d.scaleNew || 100;
+  DOM.sliderScaleOld.value = Math.max(25, Math.min(200, d.scaleOld || 100));
+  DOM.sliderScaleNew.value = Math.max(25, Math.min(200, d.scaleNew || 100));
+  DOM.scaleScope.value = d.scaleScope || 'page';
   syncColors();
 }
 
 function gatherUISettings() {
   return {
-    colorOld: document.getElementById('color-old').value,
-    colorNew: document.getElementById('color-new').value,
-    opacityOld: parseInt(document.getElementById('slider-opacity-old').value),
-    opacityNew: parseInt(document.getElementById('slider-opacity-new').value),
-    ppi: document.getElementById('ppi-select').value,
-    mode, visOld, visNew,
-    offsetRange: parseInt(document.getElementById('offset-range').value) || 500,
-    offsetScope: document.getElementById('offset-scope').value,
-    thumbPPI: thumbPPI,
-    memLimitMB: cacheMemLimitMB,
-    scaleOld: parseInt(document.getElementById('input-scale-old').value) || 100,
-    scaleNew: parseInt(document.getElementById('input-scale-new').value) || 100,
-    scaleScope: document.getElementById('scale-scope').value
+    colorOld: DOM.colorOld.value, colorNew: DOM.colorNew.value,
+    opacityOld: parseInt(DOM.sliderOpacityOld.value),
+    opacityNew: parseInt(DOM.sliderOpacityNew.value),
+    ppi: DOM.ppiSelect.value, mode, visOld, visNew,
+    offsetRange: parseInt(DOM.offsetRange.value) || 500,
+    offsetScope: DOM.offsetScope.value,
+    thumbPPI, memLimitMB: cacheMemLimitMB,
+    scaleOld: parseInt(DOM.inputScaleOld.value) || 100,
+    scaleNew: parseInt(DOM.inputScaleNew.value) || 100,
+    scaleScope: DOM.scaleScope.value
   };
 }
 
@@ -1021,15 +1061,15 @@ function resetToDefaults() {
   cacheOld = {}; cacheNew = {};
   _trackedCacheBytes = 0;
   cachePPI = 0;
-  lruOrder = [];
+  lruOrder = []; lruSet = new Set();
   invalidateRecolor();
   clearThumbCache();
   thumbPPI = HARDCODED_DEFAULTS.thumbPPI;
-  document.getElementById('thumb-ppi').value = thumbPPI;
-  document.getElementById('offset-x').value = 0;
-  document.getElementById('offset-y').value = 0;
-  document.getElementById('offset-x-slider').value = 0;
-  document.getElementById('offset-y-slider').value = 0;
+  DOM.thumbPPIInput.value = thumbPPI;
+  DOM.offsetX.value = 0;
+  DOM.offsetY.value = 0;
+  DOM.offsetXSlider.value = 0;
+  DOM.offsetYSlider.value = 0;
   pageScales = {};
   currentZoom = 1;
   applyDefaults(HARDCODED_DEFAULTS);
@@ -1052,31 +1092,24 @@ function blendOverlap([r1,g1,b1], a1, [r2,g2,b2], a2) {
 }
 
 function syncColors() {
-  const cOld = document.getElementById('color-old').value;
-  const cNew = document.getElementById('color-new').value;
-  const zOld = document.getElementById('zone-old'), zNew = document.getElementById('zone-new');
-  if (zOld.classList.contains('has-file')) { zOld.style.borderColor = cOld; zOld.style.background = hexToDim(cOld); }
-  if (zNew.classList.contains('has-file')) { zNew.style.borderColor = cNew; zNew.style.background = hexToDim(cNew); }
-  document.getElementById('swatch-old').style.background = cOld;
-  document.getElementById('swatch-new').style.background = cNew;
-  const oA = parseInt(document.getElementById('slider-opacity-old').value)/100;
-  const oB = parseInt(document.getElementById('slider-opacity-new').value)/100;
+  const cOld = DOM.colorOld.value, cNew = DOM.colorNew.value;
+  if (DOM.zoneOld.classList.contains('has-file')) { DOM.zoneOld.style.borderColor = cOld; DOM.zoneOld.style.background = hexToDim(cOld); }
+  if (DOM.zoneNew.classList.contains('has-file')) { DOM.zoneNew.style.borderColor = cNew; DOM.zoneNew.style.background = hexToDim(cNew); }
+  DOM.swatchOld.style.background = cOld;
+  DOM.swatchNew.style.background = cNew;
+  const oA = parseInt(DOM.sliderOpacityOld.value)/100;
+  const oB = parseInt(DOM.sliderOpacityNew.value)/100;
   const ov = blendOverlap(hexToRgb(cOld), oA, hexToRgb(cNew), oB);
-  document.getElementById('swatch-overlap').style.background = `rgb(${ov[0]},${ov[1]},${ov[2]})`;
-  const bOld = document.getElementById('vis-old'), bNew = document.getElementById('vis-new');
-  bOld.classList.toggle('active', visOld); bNew.classList.toggle('active', visNew);
-  if (visOld) { bOld.style.color=cOld; bOld.style.borderColor=cOld; bOld.style.background=hexToDim(cOld); }
-  else { bOld.style.color=''; bOld.style.borderColor=''; bOld.style.background=''; }
-  if (visNew) { bNew.style.color=cNew; bNew.style.borderColor=cNew; bNew.style.background=hexToDim(cNew); }
-  else { bNew.style.color=''; bNew.style.borderColor=''; bNew.style.background=''; }
-  document.getElementById('icon-old').style.color = cOld;
-  document.getElementById('icon-new').style.color = cNew;
-  document.getElementById('label-color-old').style.color = cOld;
-  document.getElementById('label-color-new').style.color = cNew;
-  document.getElementById('label-opacity-old').style.color = cOld;
-  document.getElementById('label-opacity-new').style.color = cNew;
-  document.getElementById('label-scale-old').style.color = cOld;
-  document.getElementById('label-scale-new').style.color = cNew;
+  DOM.swatchOverlap.style.background = `rgb(${ov[0]},${ov[1]},${ov[2]})`;
+  DOM.visOldBtn.classList.toggle('active', visOld); DOM.visNewBtn.classList.toggle('active', visNew);
+  if (visOld) { DOM.visOldBtn.style.color=cOld; DOM.visOldBtn.style.borderColor=cOld; DOM.visOldBtn.style.background=hexToDim(cOld); }
+  else { DOM.visOldBtn.style.color=''; DOM.visOldBtn.style.borderColor=''; DOM.visOldBtn.style.background=''; }
+  if (visNew) { DOM.visNewBtn.style.color=cNew; DOM.visNewBtn.style.borderColor=cNew; DOM.visNewBtn.style.background=hexToDim(cNew); }
+  else { DOM.visNewBtn.style.color=''; DOM.visNewBtn.style.borderColor=''; DOM.visNewBtn.style.background=''; }
+  DOM.iconOld.style.color = cOld; DOM.iconNew.style.color = cNew;
+  DOM.labelColorOld.style.color = cOld; DOM.labelColorNew.style.color = cNew;
+  DOM.labelOpacityOld.style.color = cOld; DOM.labelOpacityNew.style.color = cNew;
+  DOM.labelScaleOld.style.color = cOld; DOM.labelScaleNew.style.color = cNew;
 }
 
 // ═══════════════════════════════════════
@@ -1095,30 +1128,28 @@ const PRESETS = [
   { name:'Gray-Red', old:'#546e7a', new:'#d32f2f' },
 ];
 (function() {
-  const grid = document.getElementById('preset-grid');
   PRESETS.forEach((p, i) => {
     const pill = document.createElement('div');
     pill.className = 'preset-pill' + (i===0?' selected':'');
     pill.title = p.name;
     pill.innerHTML = `<div class="preset-swatch" style="background:${p.old}"></div><div class="preset-swatch" style="background:${p.new}"></div><span class="preset-label">${p.name}</span>`;
     pill.addEventListener('click', () => {
-      document.querySelectorAll('.preset-pill').forEach(el => el.classList.remove('selected'));
+      DOM.presetGrid.querySelectorAll('.preset-pill').forEach(el => el.classList.remove('selected'));
       pill.classList.add('selected');
-      document.getElementById('color-old').value = p.old;
-      document.getElementById('color-new').value = p.new;
+      DOM.colorOld.value = p.old;
+      DOM.colorNew.value = p.new;
       invalidateRecolor();
       syncColors();
       if (rawOld || rawNew) recolorAndComposite();
     });
-    grid.appendChild(pill);
+    DOM.presetGrid.appendChild(pill);
   });
 })();
 
 // ═══════════════════════════════════════
 //  UPLOAD
 // ═══════════════════════════════════════
-function initZone(zoneId, inputId, which) {
-  const zone = document.getElementById(zoneId), input = document.getElementById(inputId);
+function initZone(zone, input, which) {
   zone.addEventListener('click', () => input.click());
   input.addEventListener('change', () => { if (input.files[0]) loadPdf(input.files[0], which); });
   zone.addEventListener('dragenter', e => { e.preventDefault(); e.stopPropagation(); zone.classList.add('dragover'); });
@@ -1126,11 +1157,10 @@ function initZone(zoneId, inputId, which) {
   zone.addEventListener('dragleave', e => { e.preventDefault(); e.stopPropagation(); zone.classList.remove('dragover'); });
   zone.addEventListener('drop', e => { e.preventDefault(); e.stopPropagation(); zone.classList.remove('dragover'); const f=e.dataTransfer.files[0]; if(f&&(f.type==='application/pdf'||f.name.endsWith('.pdf'))) loadPdf(f, which); });
 }
-initZone('zone-old','file-old','old');
-initZone('zone-new','file-new','new');
-const canvasArea = document.getElementById('canvas-area');
-canvasArea.addEventListener('dragover', e => e.preventDefault());
-canvasArea.addEventListener('drop', e => {
+initZone(DOM.zoneOld, $('file-old'), 'old');
+initZone(DOM.zoneNew, $('file-new'), 'new');
+DOM.canvasArea.addEventListener('dragover', e => e.preventDefault());
+DOM.canvasArea.addEventListener('drop', e => {
   e.preventDefault();
   const files = [...e.dataTransfer.files].filter(f => f.type==='application/pdf'||f.name.endsWith('.pdf'));
   if (files.length >= 2) { loadPdf(files[0],'old'); loadPdf(files[1],'new'); }
@@ -1139,17 +1169,19 @@ canvasArea.addEventListener('drop', e => {
 
 async function loadPdf(file, which) {
   cacheAbort = true;
-  document.getElementById(`name-${which}`).textContent = file.name;
-  document.getElementById(`zone-${which}`).classList.add('has-file');
+  const nameEl = which === 'old' ? DOM.nameOld : DOM.nameNew;
+  const zoneEl = which === 'old' ? DOM.zoneOld : DOM.zoneNew;
+  nameEl.textContent = file.name;
+  zoneEl.classList.add('has-file');
   const buf = await file.arrayBuffer();
   if (which === 'old') { pdfBufOld = buf.slice(0); recoloredOld = null; }
   else { pdfBufNew = buf.slice(0); recoloredNew = null; }
-  cacheOld = {}; cacheNew = {}; lruOrder = [];
+  cacheOld = {}; cacheNew = {}; lruOrder = []; lruSet = new Set();
   _trackedCacheBytes = 0;
   if (maxPages > 0) updateCacheUI();
   const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
   if (which === 'old') pdfOld = pdf; else pdfNew = pdf;
-  document.getElementById('btn-compare').disabled = !(pdfOld && pdfNew);
+  DOM.btnCompare.disabled = !(pdfOld && pdfNew);
   syncColors();
   rebuildThumbsNow();
 }
@@ -1157,7 +1189,10 @@ async function loadPdf(file, which) {
 // ═══════════════════════════════════════
 //  RENDER SCALE
 // ═══════════════════════════════════════
-function getRenderScale() { return parseInt(document.getElementById('ppi-select').value) / 72; }
+function getRenderScale() {
+  const ppi = Math.max(36, Math.min(600, parseInt(DOM.ppiSelect.value) || 150));
+  return ppi / 72;
+}
 
 // ═══════════════════════════════════════
 //  COMPARE
@@ -1166,24 +1201,23 @@ async function runCompare() {
   if (processing) return;
   processing = true;
   cacheAbort = true; await sleep(50); cacheAbort = false;
-  const btn = document.getElementById('btn-compare');
-  btn.textContent = 'Rendering page 1…';
-  document.getElementById('placeholder').style.display = 'none';
-  document.getElementById('canvas-container').style.display = 'block';
-  document.getElementById('zoom-bar').classList.add('show');
+  DOM.btnCompare.textContent = 'Rendering page 1…';
+  DOM.placeholder.style.display = 'none';
+  DOM.canvasContainer.style.display = 'block';
+  DOM.zoomBar.classList.add('show');
   maxPages = Math.max(pdfOld.numPages, pdfNew.numPages);
   currentPage = 1;
-  const ppi = parseInt(document.getElementById('ppi-select').value);
-  if (cachePPI !== ppi) { cacheOld = {}; cacheNew = {}; lruOrder = []; _trackedCacheBytes = 0; }
+  const ppi = parseInt(DOM.ppiSelect.value);
+  if (cachePPI !== ppi) { cacheOld = {}; cacheNew = {}; lruOrder = []; lruSet = new Set(); _trackedCacheBytes = 0; }
   cachePPI = ppi;
   invalidateRecolor();
   hasRenderedOnce = false;
   await renderPage(1);
   updatePageNav(); updateCacheUI();
-  document.getElementById('cache-to').value = maxPages;
-  document.getElementById('cache-from').max = maxPages;
-  document.getElementById('cache-to').max = maxPages;
-  btn.textContent = 'Compare Revisions';
+  DOM.cacheTo.value = maxPages;
+  DOM.cacheFrom.max = maxPages;
+  DOM.cacheTo.max = maxPages;
+  DOM.btnCompare.textContent = 'Compare Revisions';
   processing = false;
   rebuildThumbsNow();
 }
@@ -1196,25 +1230,22 @@ function getCachedCount() { let n=0; for(let p=1;p<=maxPages;p++) if(isPageCache
 
 function estimateCacheMemMB() {
   let bytes = _trackedCacheBytes;
-  for (const k in thumbDataUrls) if (thumbDataUrls[k]) bytes += thumbDataUrls[k].length;
+  // Data URLs are base64-encoded; each char is 1 byte in JS string (UCS-2 = 2 bytes per char)
+  for (const k in thumbDataUrls) if (thumbDataUrls[k]) bytes += thumbDataUrls[k].length * 2;
   return (bytes / 1048576).toFixed(1);
 }
 
 function updateCacheUI() {
   const total = maxPages, cached = getCachedCount();
-  const el = document.getElementById('cache-status');
-  if (cached >= total) { el.textContent = `✓ All ${total} pages cached`; el.style.color = '#3fb950'; }
-  else { el.textContent = `${cached}/${total} pages cached`; el.style.color = ''; }
-  const bar = document.getElementById('cache-bar');
-  bar.style.width = total > 0 ? (cached/total*100)+'%' : '0%';
-  bar.style.background = cached >= total ? '#3fb950' : '#58a6ff';
+  if (cached >= total) { DOM.cacheStatus.textContent = `✓ All ${total} pages cached`; DOM.cacheStatus.style.color = '#3fb950'; }
+  else { DOM.cacheStatus.textContent = `${cached}/${total} pages cached`; DOM.cacheStatus.style.color = ''; }
+  DOM.cacheBar.style.width = total > 0 ? (cached/total*100)+'%' : '0%';
+  DOM.cacheBar.style.background = cached >= total ? '#3fb950' : '#58a6ff';
   const usedMB = parseFloat(estimateCacheMemMB());
   const pct = Math.min(100, (usedMB / cacheMemLimitMB * 100)).toFixed(0);
-  document.getElementById('mem-est').textContent = `~${usedMB} / ${cacheMemLimitMB} MB (${pct}%)`;
-  if (usedMB > cacheMemLimitMB * 0.9) document.getElementById('mem-est').style.color = '#ff6b6b';
-  else document.getElementById('mem-est').style.color = '';
-  const indicator = document.getElementById('cache-indicator');
-  indicator.innerHTML = '';
+  DOM.memEst.textContent = `~${usedMB} / ${cacheMemLimitMB} MB (${pct}%)`;
+  DOM.memEst.style.color = usedMB > cacheMemLimitMB * 0.9 ? '#ff6b6b' : '';
+  DOM.cacheIndicator.innerHTML = '';
   if (total > 0 && total <= 60) {
     let html = '';
     for (let p=1; p<=total; p++) {
@@ -1226,7 +1257,7 @@ function updateCacheUI() {
     indicator.innerHTML = `<span style="font-size:9px;color:var(--text-dim);">${cached}/${total} pages — use range cache</span>`;
   }
 }
-document.getElementById('cache-indicator').addEventListener('click', e => {
+DOM.cacheIndicator.addEventListener('click', e => {
   const dot = e.target.closest('.cache-dot');
   if (!dot) return;
   const p = parseInt(dot.dataset.page);
@@ -1237,15 +1268,14 @@ document.getElementById('cache-indicator').addEventListener('click', e => {
 });
 
 async function cacheRange() {
-  const from = Math.max(1, parseInt(document.getElementById('cache-from').value)||1);
-  const to = Math.min(maxPages, parseInt(document.getElementById('cache-to').value)||maxPages);
+  const from = Math.max(1, parseInt(DOM.cacheFrom.value)||1);
+  const to = Math.min(maxPages, parseInt(DOM.cacheTo.value)||maxPages);
   if (from > to || !pdfOld || !pdfNew) return;
   cacheAbort = false;
-  const btn = document.getElementById('btn-compare');
   for (let p = from; p <= to; p++) {
     if (cacheAbort) break;
     if (isPageCached(p)) { touchLRU(p); continue; }
-    btn.textContent = `Caching ${p}/${to}…`;
+    DOM.btnCompare.textContent = `Caching ${p}/${to}…`;
     evictUntilFits(estimatePageBytes());
     if (cacheOld[p] === undefined) {
       const img = await renderPdfPage(pdfOld, p);
@@ -1263,16 +1293,16 @@ async function cacheRange() {
     updateCacheUI();
     await sleep(10);
   }
-  btn.textContent = 'Compare Revisions';
+  DOM.btnCompare.textContent = 'Compare Revisions';
   updateCacheUI();
 }
-async function cacheAllPages() { document.getElementById('cache-from').value=1; document.getElementById('cache-to').value=maxPages; await cacheRange(); }
+async function cacheAllPages() { DOM.cacheFrom.value=1; DOM.cacheTo.value=maxPages; await cacheRange(); }
 function clearCache() {
   cacheAbort = true;
   cacheOld = {}; cacheNew = {};
   _trackedCacheBytes = 0;
   invalidateRecolor();
-  lruOrder = [];
+  lruOrder = []; lruSet = new Set();
   if (rawOld) { cacheOld[currentPage] = rawOld; _trackedCacheBytes += rawOld.data.byteLength; touchLRU(currentPage); }
   if (rawNew) { cacheNew[currentPage] = rawNew; _trackedCacheBytes += rawNew.data.byteLength; }
   clearThumbCache();
@@ -1288,19 +1318,23 @@ async function renderPage(num) {
   } else {
     evictUntilFits(estimatePageBytes());
     rawOld = await renderPdfPage(pdfOld, num);
-    cacheOld[num] = rawOld;
-    if (rawOld) _trackedCacheBytes += rawOld.data.byteLength;
+    if (rawOld) {
+      cacheOld[num] = rawOld;
+      _trackedCacheBytes += rawOld.data.byteLength;
+    }
   }
   if (cacheNew[num] !== undefined) {
     rawNew = cacheNew[num];
   } else {
     rawNew = await renderPdfPage(pdfNew, num);
-    cacheNew[num] = rawNew;
-    if (rawNew) _trackedCacheBytes += rawNew.data.byteLength;
+    if (rawNew) {
+      cacheNew[num] = rawNew;
+      _trackedCacheBytes += rawNew.data.byteLength;
+    }
   }
+  if (!rawOld && !rawNew) return;
   touchLRU(num);
   invalidateRecolor();
-  // Direct call — must complete synchronously so canvas is ready for callers (export, page nav)
   _doRecolorAndComposite();
   if (!hasRenderedOnce) { hasRenderedOnce = true; requestAnimationFrame(() => zoomFit()); }
 }
@@ -1359,8 +1393,8 @@ function putImgToTempCanvas(img, tmpCanvas, tmpCtx) {
 
 // Synchronous recolor + composite — safe, no async race conditions
 function _doRecolorAndComposite() {
-  const cOldHex = document.getElementById('color-old').value;
-  const cNewHex = document.getElementById('color-new').value;
+  const cOldHex = DOM.colorOld.value;
+  const cNewHex = DOM.colorNew.value;
   // Only recolor if color actually changed or data is new
   if (!recoloredOld || lastColorOld !== cOldHex) {
     recoloredOld = rawOld ? recolor(rawOld, hexToRgb(cOldHex)) : null;
@@ -1389,9 +1423,9 @@ function recolorAndComposite() {
 //  COMPOSITE — synchronous, uses reusable temp canvases, supports per-layer scale
 // ═══════════════════════════════════════
 function composite(w, h, imgO, imgN) {
-  const out = document.getElementById('canvas-output');
-  const aO = parseInt(document.getElementById('slider-opacity-old').value)/100;
-  const aN = parseInt(document.getElementById('slider-opacity-new').value)/100;
+  const out = DOM.canvasOutput;
+  const aO = parseInt(DOM.sliderOpacityOld.value)/100;
+  const aN = parseInt(DOM.sliderOpacityNew.value)/100;
   const ps = getPageScale(currentPage);
   const sO = ps.old / 100;
   const sN = ps.new / 100;
@@ -1425,11 +1459,11 @@ function composite(w, h, imgO, imgN) {
     ctx.fillStyle = '#e8e8e8'; ctx.fillRect(0,0,out.width,out.height);
     ctx.fillStyle = '#fff'; ctx.fillRect(0,0,leftW,out.height); ctx.fillRect(leftW+gap,0,rW,rH);
     if (imgO && visOld) { ctx.globalAlpha=aO; ctx.drawImage(putImgToTempCanvas(imgO,_tmpCanvasA,_tmpCtxA),0,0,imgO.width,imgO.height,0,0,wO,hO); }
-    if (imgN && visNew) { ctx.globalAlpha=aN; ctx.drawImage(putImgToTempCanvas(imgN,_tmpCanvasB,_tmpCtxB),0,0,imgN.width,imgN.height,leftW+gap+(ox>=0?ox:0),(oy>=0?oy:0),wN,hN); }
+    if (imgN && visNew) { ctx.globalAlpha=aN; ctx.drawImage(putImgToTempCanvas(imgN,_tmpCanvasB,_tmpCtxB),0,0,imgN.width,imgN.height,leftW+gap+ox,oy,wN,hN); }
     ctx.globalAlpha = 1;
     ctx.font = 'bold 24px DM Sans';
-    ctx.fillStyle = document.getElementById('color-old').value; ctx.fillText('OLD',16,34);
-    ctx.fillStyle = document.getElementById('color-new').value; ctx.fillText('NEW',leftW+gap+16,34);
+    ctx.fillStyle = DOM.colorOld.value; ctx.fillText('OLD',16,34);
+    ctx.fillStyle = DOM.colorNew.value; ctx.fillText('NEW',leftW+gap+16,34);
   }
   applyZoom();
 }
@@ -1438,20 +1472,16 @@ function composite(w, h, imgO, imgN) {
 //  ZOOM
 // ═══════════════════════════════════════
 function applyZoom() {
-  const container = document.getElementById('canvas-container');
-  const canvas = document.getElementById('canvas-output');
-  const pad = document.getElementById('canvas-pad');
-  const dw = canvas.width*currentZoom, dh = canvas.height*currentZoom;
-  container.style.width = dw+'px'; container.style.height = dh+'px';
-  canvas.style.width = '100%'; canvas.style.height = '100%';
-  pad.style.minWidth = (dw+48)+'px'; pad.style.minHeight = (dh+48)+'px';
-  document.getElementById('zoom-label').textContent = Math.round(currentZoom*getRenderScale()*100)+'%';
+  const dw = DOM.canvasOutput.width*currentZoom, dh = DOM.canvasOutput.height*currentZoom;
+  DOM.canvasContainer.style.width = dw+'px'; DOM.canvasContainer.style.height = dh+'px';
+  DOM.canvasOutput.style.width = '100%'; DOM.canvasOutput.style.height = '100%';
+  DOM.canvasPad.style.minWidth = (dw+48)+'px'; DOM.canvasPad.style.minHeight = (dh+48)+'px';
+  DOM.zoomLabel.textContent = Math.round(currentZoom*getRenderScale()*100)+'%';
 }
 function doZoom(delta) { currentZoom = Math.max(0.03, Math.min(5, currentZoom+delta)); applyZoom(); }
 function zoomFit() {
-  const area = document.getElementById('canvas-area'), canvas = document.getElementById('canvas-output');
-  if (!canvas.width||!canvas.height) return;
-  currentZoom = Math.min((area.clientWidth-64)/canvas.width, (area.clientHeight-64)/canvas.height);
+  if (!DOM.canvasOutput.width||!DOM.canvasOutput.height) return;
+  currentZoom = Math.min((DOM.canvasArea.clientWidth-64)/DOM.canvasOutput.width, (DOM.canvasArea.clientHeight-64)/DOM.canvasOutput.height);
   applyZoom();
 }
 
@@ -1459,30 +1489,28 @@ function zoomFit() {
 //  CONTROLS
 // ═══════════════════════════════════════
 function updateOpacity() {
-  document.getElementById('val-opacity-old').textContent = document.getElementById('slider-opacity-old').value+'%';
-  document.getElementById('val-opacity-new').textContent = document.getElementById('slider-opacity-new').value+'%';
+  DOM.valOpacityOld.textContent = DOM.sliderOpacityOld.value+'%';
+  DOM.valOpacityNew.textContent = DOM.sliderOpacityNew.value+'%';
   syncColors();
-  // Opacity change doesn't need recolor, just re-composite — rAF gated
   if (rawOld || rawNew) recolorAndComposite();
 }
 // Scale: slider → input sync → apply
 function sliderScale() {
-  document.getElementById('input-scale-old').value = document.getElementById('slider-scale-old').value;
-  document.getElementById('input-scale-new').value = document.getElementById('slider-scale-new').value;
+  DOM.inputScaleOld.value = DOM.sliderScaleOld.value;
+  DOM.inputScaleNew.value = DOM.sliderScaleNew.value;
   _applyScale();
 }
-// Scale: input → slider sync → apply
 function inputScale() {
-  const sO = Math.max(10, Math.min(500, parseInt(document.getElementById('input-scale-old').value) || 100));
-  const sN = Math.max(10, Math.min(500, parseInt(document.getElementById('input-scale-new').value) || 100));
-  document.getElementById('slider-scale-old').value = Math.max(25, Math.min(200, sO));
-  document.getElementById('slider-scale-new').value = Math.max(25, Math.min(200, sN));
+  const sO = Math.max(10, Math.min(500, parseInt(DOM.inputScaleOld.value) || 100));
+  const sN = Math.max(10, Math.min(500, parseInt(DOM.inputScaleNew.value) || 100));
+  DOM.sliderScaleOld.value = Math.max(25, Math.min(200, sO));
+  DOM.sliderScaleNew.value = Math.max(25, Math.min(200, sN));
   _applyScale();
 }
 function _applyScale() {
-  const sO = parseInt(document.getElementById('input-scale-old').value) || 100;
-  const sN = parseInt(document.getElementById('input-scale-new').value) || 100;
-  if (document.getElementById('scale-scope').value === 'all') {
+  const sO = parseInt(DOM.inputScaleOld.value) || 100;
+  const sN = parseInt(DOM.inputScaleNew.value) || 100;
+  if (DOM.scaleScope.value === 'all') {
     for (let p = 1; p <= maxPages; p++) setPageScale(p, sO, sN);
   } else {
     setPageScale(currentPage, sO, sN);
@@ -1491,7 +1519,7 @@ function _applyScale() {
   scheduleThumbRefresh();
 }
 function resetScale() {
-  if (document.getElementById('scale-scope').value === 'all') {
+  if (DOM.scaleScope.value === 'all') {
     pageScales = {};
   } else {
     delete pageScales[String(currentPage)];
@@ -1501,8 +1529,8 @@ function resetScale() {
   scheduleThumbRefresh();
 }
 function matchScale() {
-  const sN = parseInt(document.getElementById('input-scale-new').value) || 100;
-  if (document.getElementById('scale-scope').value === 'all') {
+  const sN = parseInt(DOM.inputScaleNew.value) || 100;
+  if (DOM.scaleScope.value === 'all') {
     for (let p = 1; p <= maxPages; p++) { const s = getPageScale(p); setPageScale(p, sN, s.new); }
   } else {
     const s = getPageScale(currentPage); setPageScale(currentPage, sN, s.new);
@@ -1513,8 +1541,8 @@ function matchScale() {
 }
 function setMode(m) {
   mode = m;
-  document.getElementById('mode-overlay').classList.toggle('active', m==='overlay');
-  document.getElementById('mode-sidebyside').classList.toggle('active', m==='sidebyside');
+  DOM.modeOverlay.classList.toggle('active', m==='overlay');
+  DOM.modeSidebyside.classList.toggle('active', m==='sidebyside');
   if (rawOld || rawNew) recolorAndComposite();
 }
 function toggleVis(which) {
@@ -1522,21 +1550,18 @@ function toggleVis(which) {
   syncColors();
   if (rawOld || rawNew) recolorAndComposite();
 }
-document.getElementById('color-old').addEventListener('input', () => {
-  document.querySelectorAll('.preset-pill').forEach(el => el.classList.remove('selected'));
+function _onColorChange() {
+  DOM.presetGrid.querySelectorAll('.preset-pill').forEach(el => el.classList.remove('selected'));
   invalidateRecolor(); syncColors();
   if (rawOld || rawNew) recolorAndComposite();
-});
-document.getElementById('color-new').addEventListener('input', () => {
-  document.querySelectorAll('.preset-pill').forEach(el => el.classList.remove('selected'));
-  invalidateRecolor(); syncColors();
-  if (rawOld || rawNew) recolorAndComposite();
-});
+}
+DOM.colorOld.addEventListener('input', _onColorChange);
+DOM.colorNew.addEventListener('input', _onColorChange);
 
 async function changePPI() {
   if (!pdfOld&&!pdfNew) return; if (!rawOld&&!rawNew) return;
-  const oldPPI = cachePPI || parseInt(document.getElementById('ppi-select').value);
-  const newPPI = parseInt(document.getElementById('ppi-select').value);
+  const oldPPI = cachePPI || parseInt(DOM.ppiSelect.value);
+  const newPPI = parseInt(DOM.ppiSelect.value);
   // Scale all offsets proportionally so alignment is preserved
   if (oldPPI > 0 && newPPI > 0 && oldPPI !== newPPI) {
     const ratio = newPPI / oldPPI;
@@ -1547,14 +1572,14 @@ async function changePPI() {
     loadOffsetUI();
   }
   cacheAbort = true; await sleep(50); cacheAbort = false;
-  cacheOld={}; cacheNew={}; lruOrder=[];
+  cacheOld={}; cacheNew={}; lruOrder=[]; lruSet = new Set();
   _trackedCacheBytes = 0;
   invalidateRecolor();
   cachePPI = newPPI;
-  document.getElementById('btn-compare').textContent = 'Re-rendering…';
+  DOM.btnCompare.textContent = 'Re-rendering…';
   hasRenderedOnce = false;
   await renderPage(currentPage);
-  document.getElementById('btn-compare').textContent = 'Compare Revisions';
+  DOM.btnCompare.textContent = 'Compare Revisions';
   updateCacheUI();
 }
 
@@ -1565,10 +1590,10 @@ function getPageScale(page) { return pageScales[String(page)] || { old: 100, new
 function setPageScale(page, sOld, sNew) { pageScales[String(page)] = { old: sOld, new: sNew }; }
 function loadScaleUI() {
   const s = getPageScale(currentPage);
-  document.getElementById('input-scale-old').value = s.old;
-  document.getElementById('input-scale-new').value = s.new;
-  document.getElementById('slider-scale-old').value = Math.max(25, Math.min(200, s.old));
-  document.getElementById('slider-scale-new').value = Math.max(25, Math.min(200, s.new));
+  DOM.inputScaleOld.value = s.old;
+  DOM.inputScaleNew.value = s.new;
+  DOM.sliderScaleOld.value = Math.max(25, Math.min(200, s.old));
+  DOM.sliderScaleNew.value = Math.max(25, Math.min(200, s.new));
 }
 
 // ═══════════════════════════════════════
@@ -1578,36 +1603,39 @@ function getPageOffset(page) { return pageOffsets[String(page)] || {x:0,y:0}; }
 function setPageOffset(page, x, y) { pageOffsets[String(page)] = {x,y}; }
 function loadOffsetUI() {
   const off = getPageOffset(currentPage);
-  document.getElementById('offset-x').value = off.x;
-  document.getElementById('offset-y').value = off.y;
+  DOM.offsetX.value = off.x;
+  DOM.offsetY.value = off.y;
   syncSliders();
   loadScaleUI();
 }
 function syncSliders() {
-  const x=parseInt(document.getElementById('offset-x').value)||0, y=parseInt(document.getElementById('offset-y').value)||0;
-  const sx=document.getElementById('offset-x-slider'), sy=document.getElementById('offset-y-slider');
-  sx.value = Math.max(parseInt(sx.min),Math.min(parseInt(sx.max),x));
-  sy.value = Math.max(parseInt(sy.min),Math.min(parseInt(sy.max),y));
+  const x=parseInt(DOM.offsetX.value)||0, y=parseInt(DOM.offsetY.value)||0;
+  DOM.offsetXSlider.value = Math.max(parseInt(DOM.offsetXSlider.min),Math.min(parseInt(DOM.offsetXSlider.max),x));
+  DOM.offsetYSlider.value = Math.max(parseInt(DOM.offsetYSlider.min),Math.min(parseInt(DOM.offsetYSlider.max),y));
 }
-function sliderToInput(axis) { document.getElementById(`offset-${axis}`).value = document.getElementById(`offset-${axis}-slider`).value; applyOffset(); }
+function sliderToInput(axis) {
+  if (axis==='x') { DOM.offsetX.value = DOM.offsetXSlider.value; }
+  else { DOM.offsetY.value = DOM.offsetYSlider.value; }
+  applyOffset();
+}
 function updateSliderRange() {
-  const r = Math.max(50, parseInt(document.getElementById('offset-range').value)||500);
-  document.getElementById('offset-range').value = r;
-  document.getElementById('offset-x-slider').min=-r; document.getElementById('offset-x-slider').max=r;
-  document.getElementById('offset-y-slider').min=-r; document.getElementById('offset-y-slider').max=r;
+  const r = Math.max(50, parseInt(DOM.offsetRange.value)||500);
+  DOM.offsetRange.value = r;
+  DOM.offsetXSlider.min=-r; DOM.offsetXSlider.max=r;
+  DOM.offsetYSlider.min=-r; DOM.offsetYSlider.max=r;
   syncSliders();
 }
 function applyOffset() {
-  const x=parseInt(document.getElementById('offset-x').value)||0, y=parseInt(document.getElementById('offset-y').value)||0;
+  const x=parseInt(DOM.offsetX.value)||0, y=parseInt(DOM.offsetY.value)||0;
   syncSliders();
-  if (document.getElementById('offset-scope').value==='all') { for(let p=1;p<=maxPages;p++) setPageOffset(p,x,y); }
+  if (DOM.offsetScope.value==='all') { for(let p=1;p<=maxPages;p++) setPageOffset(p,x,y); }
   else setPageOffset(currentPage,x,y);
   // FIX: rAF-gated — slider fires 60+ Hz, but we render max once/frame
   if (rawOld||rawNew) recolorAndComposite();
   scheduleThumbRefresh();
 }
 function nudgeOffset(dx,dy) {
-  const scope=document.getElementById('offset-scope').value;
+  const scope=DOM.offsetScope.value;
   if (scope==='all') { for(let p=1;p<=maxPages;p++){const o=getPageOffset(p);setPageOffset(p,o.x+dx,o.y+dy);} }
   else { const o=getPageOffset(currentPage); setPageOffset(currentPage,o.x+dx,o.y+dy); }
   loadOffsetUI();
@@ -1615,7 +1643,7 @@ function nudgeOffset(dx,dy) {
   scheduleThumbRefresh();
 }
 function resetOffset() {
-  if (document.getElementById('offset-scope').value==='all') pageOffsets={};
+  if (DOM.offsetScope.value==='all') pageOffsets={};
   else delete pageOffsets[String(currentPage)];
   loadOffsetUI();
   if (rawOld||rawNew) recolorAndComposite();
@@ -1626,17 +1654,17 @@ function resetOffset() {
 //  PAGE NAV
 // ═══════════════════════════════════════
 function updatePageNav() {
-  document.getElementById('page-goto').value = currentPage;
-  document.getElementById('page-goto').max = maxPages;
-  document.getElementById('page-total').textContent = maxPages;
-  document.getElementById('btn-prev').disabled = (currentPage<=1);
-  document.getElementById('btn-next').disabled = (currentPage>=maxPages);
-  document.querySelectorAll('.thumb-item').forEach((el,i) => el.classList.toggle('active', i+1===currentPage));
-  const activeThumb = document.querySelector('.thumb-item.active');
+  DOM.pageGoto.value = currentPage;
+  DOM.pageGoto.max = maxPages;
+  DOM.pageTotal.textContent = maxPages;
+  DOM.btnPrev.disabled = (currentPage<=1);
+  DOM.btnNext.disabled = (currentPage>=maxPages);
+  DOM.thumbScroll.querySelectorAll('.thumb-item').forEach((el,i) => el.classList.toggle('active', i+1===currentPage));
+  const activeThumb = DOM.thumbScroll.querySelector('.thumb-item.active');
   if (activeThumb) activeThumb.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
 }
 function goToPage() {
-  const n = parseInt(document.getElementById('page-goto').value);
+  const n = parseInt(DOM.pageGoto.value);
   if (isNaN(n) || n < 1 || n > maxPages || n === currentPage) return;
   currentPage = n; loadOffsetUI();
   renderPage(currentPage).then(() => { updatePageNav(); updateCacheUI(); });
@@ -1659,7 +1687,7 @@ async function savePreset() {
   btn.textContent = '⏳ Saving…'; btn.style.pointerEvents = 'none';
   await sleep(50);
   const preset = { version:2, ...gatherUISettings(), pageOffsets: JSON.parse(JSON.stringify(pageOffsets)), pageScales: JSON.parse(JSON.stringify(pageScales)), maxPages, currentPage,
-    fileOld: document.getElementById('name-old').textContent||'', fileNew: document.getElementById('name-new').textContent||'', savedAt: new Date().toISOString() };
+    fileOld: DOM.nameOld.textContent||'', fileNew: DOM.nameNew.textContent||'', savedAt: new Date().toISOString() };
   if (pdfBufOld) preset.pdfOldB64 = bufToBase64(pdfBufOld);
   if (pdfBufNew) preset.pdfNewB64 = bufToBase64(pdfBufNew);
   const json = JSON.stringify(preset);
@@ -1674,21 +1702,20 @@ async function savePreset() {
 
 async function loadPreset(e) {
   const file = e.target.files[0]; if(!file) return; e.target.value='';
-  const btn = document.getElementById('btn-compare');
-  btn.textContent = 'Loading preset…';
-  let p; try { p = JSON.parse(await file.text()); } catch(err) { alert('Invalid preset: '+err.message); btn.textContent='Compare Revisions'; return; }
-  if (p.colorOld) document.getElementById('color-old').value=p.colorOld;
-  if (p.colorNew) document.getElementById('color-new').value=p.colorNew;
-  if (p.opacityOld!=null) { document.getElementById('slider-opacity-old').value=p.opacityOld; document.getElementById('val-opacity-old').textContent=p.opacityOld+'%'; }
-  if (p.opacityNew!=null) { document.getElementById('slider-opacity-new').value=p.opacityNew; document.getElementById('val-opacity-new').textContent=p.opacityNew+'%'; }
-  if (p.ppi) document.getElementById('ppi-select').value=p.ppi;
+  DOM.btnCompare.textContent = 'Loading preset…';
+  let p; try { p = JSON.parse(await file.text()); } catch(err) { alert('Invalid preset: '+err.message); DOM.btnCompare.textContent='Compare Revisions'; return; }
+  if (p.colorOld) DOM.colorOld.value=p.colorOld;
+  if (p.colorNew) DOM.colorNew.value=p.colorNew;
+  if (p.opacityOld!=null) { DOM.sliderOpacityOld.value=p.opacityOld; DOM.valOpacityOld.textContent=p.opacityOld+'%'; }
+  if (p.opacityNew!=null) { DOM.sliderOpacityNew.value=p.opacityNew; DOM.valOpacityNew.textContent=p.opacityNew+'%'; }
+  if (p.ppi) DOM.ppiSelect.value=p.ppi;
   if (p.mode) { mode=p.mode; setMode(mode); }
   if (p.visOld!=null) visOld=p.visOld; if(p.visNew!=null) visNew=p.visNew;
-  if (p.offsetRange) { document.getElementById('offset-range').value=p.offsetRange; updateSliderRange(); }
-  if (p.offsetScope) document.getElementById('offset-scope').value=p.offsetScope;
-  if (p.thumbPPI) { thumbPPI=p.thumbPPI; document.getElementById('thumb-ppi').value=thumbPPI; }
-  if (p.memLimitMB) { cacheMemLimitMB=p.memLimitMB; document.getElementById('mem-limit').value=cacheMemLimitMB; }
-  if (p.scaleScope) document.getElementById('scale-scope').value=p.scaleScope;
+  if (p.offsetRange) { DOM.offsetRange.value=p.offsetRange; updateSliderRange(); }
+  if (p.offsetScope) DOM.offsetScope.value=p.offsetScope;
+  if (p.thumbPPI) { thumbPPI=p.thumbPPI; DOM.thumbPPIInput.value=thumbPPI; }
+  if (p.memLimitMB) { cacheMemLimitMB=p.memLimitMB; DOM.memLimit.value=cacheMemLimitMB; }
+  if (p.scaleScope) DOM.scaleScope.value=p.scaleScope;
   if (p.pageScales) pageScales=p.pageScales;
   else if (p.scaleOld!=null || p.scaleNew!=null) {
     // Legacy: convert global scale to per-page for all pages
@@ -1701,25 +1728,25 @@ async function loadPreset(e) {
   }
   if (p.pageOffsets) pageOffsets=p.pageOffsets;
   if (p.pdfOldB64 && p.pdfNewB64) {
-    btn.textContent='Parsing old PDF…'; await sleep(30);
+    DOM.btnCompare.textContent='Parsing old PDF…'; await sleep(30);
     pdfBufOld=base64ToBuf(p.pdfOldB64); pdfOld=await pdfjsLib.getDocument({data:pdfBufOld.slice(0)}).promise;
-    document.getElementById('name-old').textContent=p.fileOld||'old.pdf'; document.getElementById('zone-old').classList.add('has-file');
-    btn.textContent='Parsing new PDF…'; await sleep(30);
+    DOM.nameOld.textContent=p.fileOld||'old.pdf'; DOM.zoneOld.classList.add('has-file');
+    DOM.btnCompare.textContent='Parsing new PDF…'; await sleep(30);
     pdfBufNew=base64ToBuf(p.pdfNewB64); pdfNew=await pdfjsLib.getDocument({data:pdfBufNew.slice(0)}).promise;
-    document.getElementById('name-new').textContent=p.fileNew||'new.pdf'; document.getElementById('zone-new').classList.add('has-file');
+    DOM.nameNew.textContent=p.fileNew||'new.pdf'; DOM.zoneNew.classList.add('has-file');
     maxPages=Math.max(pdfOld.numPages,pdfNew.numPages); currentPage=p.currentPage||1; if(currentPage>maxPages) currentPage=1;
-    cachePPI=parseInt(document.getElementById('ppi-select').value); cacheOld={}; cacheNew={}; lruOrder=[]; _trackedCacheBytes=0;
-    document.getElementById('placeholder').style.display='none'; document.getElementById('canvas-container').style.display='block'; document.getElementById('zoom-bar').classList.add('show');
-    btn.disabled=false; btn.textContent='Rendering page '+currentPage+'…'; await sleep(30);
+    cachePPI=parseInt(DOM.ppiSelect.value); cacheOld={}; cacheNew={}; lruOrder=[]; lruSet=new Set(); _trackedCacheBytes=0;
+    DOM.placeholder.style.display='none'; DOM.canvasContainer.style.display='block'; DOM.zoomBar.classList.add('show');
+    DOM.btnCompare.disabled=false; DOM.btnCompare.textContent='Rendering page '+currentPage+'…'; await sleep(30);
     invalidateRecolor(); syncColors(); loadOffsetUI();
     hasRenderedOnce=false; await renderPage(currentPage); updatePageNav(); updateCacheUI();
-    document.getElementById('cache-to').value=maxPages;
-    btn.textContent='Compare Revisions';
+    DOM.cacheTo.value=maxPages;
+    DOM.btnCompare.textContent='Compare Revisions';
     rebuildThumbsNow();
   } else {
     syncColors(); loadOffsetUI();
     if (rawOld||rawNew) recolorAndComposite();
-    btn.textContent='Compare Revisions';
+    DOM.btnCompare.textContent='Compare Revisions';
     alert('Preset loaded (settings only). Upload PDFs and click Compare.');
   }
 }
@@ -1738,11 +1765,11 @@ function _ensureJsPDF() {
 }
 
 function exportPNG() {
-  const c=document.getElementById('canvas-output'); if(!c.width) return alert('Nothing to export.');
-  c.toBlob(b=>{const a=document.createElement('a');a.href=URL.createObjectURL(b);a.download=`overlay-page-${currentPage}.png`;a.click();URL.revokeObjectURL(a.href);},'image/png');
+  if(!DOM.canvasOutput.width) return alert('Nothing to export.');
+  DOM.canvasOutput.toBlob(b=>{const a=document.createElement('a');a.href=URL.createObjectURL(b);a.download=`overlay-page-${currentPage}.png`;a.click();URL.revokeObjectURL(a.href);},'image/png');
 }
 async function exportPDF() {
-  const c=document.getElementById('canvas-output'); if(!c.width) return alert('Nothing to export.');
+  const c=DOM.canvasOutput; if(!c.width) return alert('Nothing to export.');
   if (!await _ensureJsPDF()) return;
   const JsPDF = _getJsPDF(), o=c.width>=c.height?'landscape':'portrait';
   const pdf=new JsPDF({orientation:o,unit:'px',format:[c.width,c.height]});
@@ -1751,58 +1778,64 @@ async function exportPDF() {
 }
 async function exportAllPDF() {
   if(!rawOld&&!rawNew) return alert('Nothing to export.');
-  if (!await _ensureJsPDF()) return;
-  const JsPDF = _getJsPDF(), btn=document.getElementById('btn-export-all'), origText=btn.textContent;
-  let pdf=null, savedPage=currentPage;
-  for(let p=1;p<=maxPages;p++) {
-    btn.textContent=`${p}/${maxPages}…`; await sleep(30);
-    currentPage=p; loadOffsetUI(); await renderPage(p);
-    const c=document.getElementById('canvas-output'), o=c.width>=c.height?'landscape':'portrait';
-    if(p===1) pdf=new JsPDF({orientation:o,unit:'px',format:[c.width,c.height]});
-    else pdf.addPage([c.width,c.height],o);
-    pdf.addImage(c.toDataURL('image/jpeg',0.92),'JPEG',0,0,c.width,c.height);
+  if (!_ensureJsPDF()) return;
+  const JsPDF = _getJsPDF(), btn=$('btn-export-all'), origText=btn.textContent;
+  let pdf=null;
+  const savedPage=currentPage;
+  try {
+    for(let p=1;p<=maxPages;p++) {
+      btn.textContent=`${p}/${maxPages}…`; await sleep(30);
+      currentPage=p; loadOffsetUI(); await renderPage(p);
+      const c=DOM.canvasOutput, o=c.width>=c.height?'landscape':'portrait';
+      if(p===1) pdf=new JsPDF({orientation:o,unit:'px',format:[c.width,c.height]});
+      else pdf.addPage([c.width,c.height],o);
+      pdf.addImage(c.toDataURL('image/jpeg',0.92),'JPEG',0,0,c.width,c.height);
+    }
+    pdf.save(`overlay-all-pages-${new Date().toISOString().slice(0,10)}.pdf`);
+  } finally {
+    currentPage=savedPage; loadOffsetUI(); await renderPage(savedPage); updatePageNav();
+    btn.textContent=origText;
   }
-  currentPage=savedPage; loadOffsetUI(); await renderPage(savedPage); updatePageNav();
-  pdf.save(`overlay-all-pages-${new Date().toISOString().slice(0,10)}.pdf`);
-  btn.textContent=origText;
 }
 
 async function exportAllPNG() {
   if (!rawOld && !rawNew) return alert('Nothing to export.');
   if (typeof JSZip === 'undefined') return alert('JSZip library not available.');
   const zip = new JSZip();
-  const btn = document.getElementById('btn-export-zip');
+  const btn = $('btn-export-zip');
   const origText = btn.textContent;
   const savedPage = currentPage;
-  for (let p = 1; p <= maxPages; p++) {
-    btn.textContent = `${p}/${maxPages}…`;
-    await sleep(30);
-    currentPage = p; loadOffsetUI();
-    await renderPage(p);
-    const c = document.getElementById('canvas-output');
-    const blob = await new Promise(r => c.toBlob(r, 'image/png'));
-    zip.file(`overlay-page-${String(p).padStart(3, '0')}.png`, blob);
+  try {
+    for (let p = 1; p <= maxPages; p++) {
+      btn.textContent = `${p}/${maxPages}…`;
+      await sleep(30);
+      currentPage = p; loadOffsetUI();
+      await renderPage(p);
+      const blob = await new Promise(r => DOM.canvasOutput.toBlob(r, 'image/png'));
+      zip.file(`overlay-page-${String(p).padStart(3, '0')}.png`, blob);
+    }
+    btn.textContent = 'Zipping…';
+    const zipBlob = await zip.generateAsync({ type: 'blob' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(zipBlob);
+    a.download = `overlay-all-pages-${new Date().toISOString().slice(0, 10)}.zip`;
+    a.click(); URL.revokeObjectURL(a.href);
+  } finally {
+    currentPage = savedPage; loadOffsetUI();
+    await renderPage(savedPage); updatePageNav();
+    btn.textContent = origText;
   }
-  btn.textContent = 'Zipping…';
-  currentPage = savedPage; loadOffsetUI();
-  await renderPage(savedPage); updatePageNav();
-  const zipBlob = await zip.generateAsync({ type: 'blob' });
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(zipBlob);
-  a.download = `overlay-all-pages-${new Date().toISOString().slice(0, 10)}.zip`;
-  a.click(); URL.revokeObjectURL(a.href);
-  btn.textContent = origText;
 }
 
 // ═══════════════════════════════════════
 //  DRAG-TO-PAN + WHEEL ZOOM
 // ═══════════════════════════════════════
 (function(){
-  const area=document.getElementById('canvas-area'); let drag=false,sx,sy,sl,st;
+  const area=DOM.canvasArea; let drag=false,sx,sy,sl,st;
   area.addEventListener('mousedown',e=>{if(e.target.closest('.zoom-bar'))return;drag=true;area.classList.add('dragging');sx=e.clientX;sy=e.clientY;sl=area.scrollLeft;st=area.scrollTop;e.preventDefault();});
   window.addEventListener('mousemove',e=>{if(!drag)return;area.scrollLeft=sl-(e.clientX-sx);area.scrollTop=st-(e.clientY-sy);});
   window.addEventListener('mouseup',()=>{if(!drag)return;drag=false;area.classList.remove('dragging');});
-  area.addEventListener('wheel',e=>{const c=document.getElementById('canvas-output');if(!c.width)return;e.preventDefault();const d=e.deltaY>0?-0.1:0.1,rect=area.getBoundingClientRect(),mx=e.clientX-rect.left+area.scrollLeft,my=e.clientY-rect.top+area.scrollTop,old=currentZoom;currentZoom=Math.max(0.03,Math.min(5,currentZoom+d));const r=currentZoom/old;applyZoom();area.scrollLeft=mx*r-(e.clientX-rect.left);area.scrollTop=my*r-(e.clientY-rect.top);},{passive:false});
+  area.addEventListener('wheel',e=>{if(!DOM.canvasOutput.width)return;e.preventDefault();const d=e.deltaY>0?-0.1:0.1,rect=area.getBoundingClientRect(),mx=e.clientX-rect.left+area.scrollLeft,my=e.clientY-rect.top+area.scrollTop,old=currentZoom;currentZoom=Math.max(0.03,Math.min(5,currentZoom+d));const r=currentZoom/old;applyZoom();area.scrollLeft=mx*r-(e.clientX-rect.left);area.scrollTop=my*r-(e.clientY-rect.top);},{passive:false});
 })();
 
 // ═══════════════════════════════════════
@@ -1812,14 +1845,13 @@ function getThumbScale() { return thumbPPI / 72; }
 
 function toggleThumbs() {
   thumbPanelOpen = !thumbPanelOpen;
-  document.getElementById('thumb-panel').classList.toggle('open', thumbPanelOpen);
-  document.getElementById('thumb-toggle').classList.toggle('shifted', thumbPanelOpen);
+  DOM.thumbPanel.classList.toggle('open', thumbPanelOpen);
+  DOM.thumbToggle.classList.toggle('shifted', thumbPanelOpen);
   if (thumbPanelOpen && maxPages > 0) buildThumbSlots();
 }
 
 function buildThumbSlots() {
-  const scroll = document.getElementById('thumb-scroll');
-  scroll.innerHTML = '';
+  DOM.thumbScroll.innerHTML = '';
   for (let p = 1; p <= maxPages; p++) {
     const item = document.createElement('div');
     item.className = 'thumb-item' + (p === currentPage ? ' active' : '');
@@ -1838,12 +1870,12 @@ function buildThumbSlots() {
     } else {
       item.insertAdjacentHTML('beforeend', '<div class="thumb-spinner">…</div>');
     }
-    scroll.appendChild(item);
+    DOM.thumbScroll.appendChild(item);
   }
   renderMissingThumbs();
 }
 
-document.getElementById('thumb-scroll').addEventListener('click', e => {
+DOM.thumbScroll.addEventListener('click', e => {
   const item = e.target.closest('.thumb-item');
   if (!item) return;
   const p = parseInt(item.dataset.page);
@@ -1933,13 +1965,12 @@ function clearThumbCache() {
   thumbGeneration++;
   thumbDataUrls = {};
   if (thumbTimer) { clearTimeout(thumbTimer); thumbTimer = null; }
-  const scroll = document.getElementById('thumb-scroll');
-  scroll.innerHTML = '';
+  DOM.thumbScroll.innerHTML = '';
 }
 
 function changeThumbPPI() {
-  const v = Math.max(8, Math.min(72, parseInt(document.getElementById('thumb-ppi').value) || 18));
-  document.getElementById('thumb-ppi').value = v;
+  const v = Math.max(8, Math.min(72, parseInt(DOM.thumbPPIInput.value) || 18));
+  DOM.thumbPPIInput.value = v;
   thumbPPI = v;
   rebuildThumbsNow();
 }
@@ -1948,12 +1979,11 @@ function changeThumbPPI() {
 //  KEYBOARD
 // ═══════════════════════════════════════
 window.addEventListener('keydown',e=>{
-  const t=e.target.tagName; if(t==='INPUT'||t==='SELECT'||t==='TEXTAREA') return;
-  if(maxPages<=1) return;
+  if(isInputFocused()||maxPages<=1) return;
   if(e.key==='ArrowLeft'||e.key==='PageUp'){e.preventDefault();changePage(-1);}
-  if(e.key==='ArrowRight'||e.key==='PageDown'){e.preventDefault();changePage(1);}
-  if(e.key==='Home'){e.preventDefault();currentPage=1;loadOffsetUI();renderPage(1);updatePageNav();}
-  if(e.key==='End'){e.preventDefault();currentPage=maxPages;loadOffsetUI();renderPage(maxPages);updatePageNav();}
+  else if(e.key==='ArrowRight'||e.key==='PageDown'){e.preventDefault();changePage(1);}
+  else if(e.key==='Home'){e.preventDefault();currentPage=1;loadOffsetUI();renderPage(1);updatePageNav();}
+  else if(e.key==='End'){e.preventDefault();currentPage=maxPages;loadOffsetUI();renderPage(maxPages);updatePageNav();}
 });
 </script>
 </body>
