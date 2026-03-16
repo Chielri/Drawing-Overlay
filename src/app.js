@@ -1711,7 +1711,8 @@ function solveAffine(src, dst) {
 
 // Snap small rotations (<1°) to zero in an affine transform.
 // Decomposes into rotation + scale + translation, snaps rotation, recomposes.
-function snapAffineRotation(t) {
+// srcPts/dstPts: the 3 point pairs used to compute the affine (for recomputing translation).
+function snapAffineRotation(t, srcPts, dstPts) {
   // Decompose: rotation angle from atan2(c, a) (where a=cos*sx, c=sin*sx)
   const angle = Math.atan2(t.c, t.a); // radians
   const angleDeg = angle * 180 / Math.PI;
@@ -1724,8 +1725,14 @@ function snapAffineRotation(t) {
   // Determine sign of sy (check if the transform flips)
   const det = t.a * t.d - t.b * t.c;
   const sySign = det < 0 ? -1 : 1;
-  // Rebuild without rotation
-  return { a: sx, b: 0, c: 0, d: sySign * sy, e: t.e, f: t.f };
+  // Recompute translation so centroids still map correctly
+  const csx = (srcPts[0].x + srcPts[1].x + srcPts[2].x) / 3;
+  const csy = (srcPts[0].y + srcPts[1].y + srcPts[2].y) / 3;
+  const cdx = (dstPts[0].x + dstPts[1].x + dstPts[2].x) / 3;
+  const cdy = (dstPts[0].y + dstPts[1].y + dstPts[2].y) / 3;
+  const newE = cdx - sx * csx;
+  const newF = cdy - sySign * sy * csy;
+  return { a: sx, b: 0, c: 0, d: sySign * sy, e: newE, f: newF };
 }
 
 function computeAndApplyAlign3() {
@@ -1740,7 +1747,7 @@ function computeAndApplyAlign3() {
   }
 
   // Snap tiny rotations (<1°) caused by imprecise clicking
-  transform = snapAffineRotation(transform);
+  transform = snapAffineRotation(transform, align3PointsNew, align3PointsOld);
 
   // Decompose affine into rotation, scale, and translation
   const rotRad = Math.atan2(transform.c, transform.a);
@@ -1781,12 +1788,14 @@ function computeAndApplyAlign3() {
     setPageScale(currentPage, ps.old, scaleNewPercent);
   }
 
-  // End picking mode
+  // End picking mode — clear markers since alignment is applied to offset/scale/rotation
   align3Active = false;
+  align3PointsOld = [];
+  align3PointsNew = [];
   DOM.align3Start.textContent = 'Start Alignment';
   DOM.align3Start.classList.remove('active');
   DOM.align3Overlay.classList.remove('picking');
-  drawAlign3Markers();
+  drawAlign3Markers(); // clears overlay since points arrays are now empty
   updateAlign3UI();
   loadTransformUI();
 
