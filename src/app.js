@@ -46,6 +46,7 @@ const DOM = {
   sbsDrawOld: $('sbs-draw-old'), sbsDrawNew: $('sbs-draw-new'),
   drawToolbar: $('draw-toolbar'),
   drawColor: $('draw-color'), drawWidth: $('draw-width'),
+  xhairColor: $('xhair-color'), xhairSize: $('xhair-size'),
 };
 
 // ═══════════════════════════════════════
@@ -1183,19 +1184,32 @@ async function exportAllPNG() {
     const ctx = canvas.getContext('2d');
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     if (x < 0) return; // hidden
-    ctx.strokeStyle = 'rgba(255,255,255,0.7)';
-    ctx.lineWidth = 1;
-    ctx.setLineDash([4, 4]);
+    const color = DOM.xhairColor.value;
+    const sz = parseInt(DOM.xhairSize.value); // 1=S, 2=M, 3=L
+    const lw = sz;
+    const dotR = 2 + sz * 2;
+    const dash = [3 + sz, 3 + sz];
+    // Dark outline pass for contrast
+    ctx.strokeStyle = 'rgba(0,0,0,0.5)';
+    ctx.lineWidth = lw + 2;
+    ctx.setLineDash(dash);
+    ctx.beginPath();
+    ctx.moveTo(x, 0); ctx.lineTo(x, canvas.height);
+    ctx.moveTo(0, y); ctx.lineTo(canvas.width, y);
+    ctx.stroke();
+    // Colored pass
+    ctx.strokeStyle = color;
+    ctx.lineWidth = lw;
     ctx.beginPath();
     ctx.moveTo(x, 0); ctx.lineTo(x, canvas.height);
     ctx.moveTo(0, y); ctx.lineTo(canvas.width, y);
     ctx.stroke();
     ctx.setLineDash([]);
-    // small dot at intersection
-    ctx.fillStyle = 'rgba(255,255,255,0.9)';
-    ctx.beginPath();
-    ctx.arc(x, y, 3, 0, Math.PI * 2);
-    ctx.fill();
+    // Dot at intersection: outline + fill
+    ctx.fillStyle = 'rgba(0,0,0,0.5)';
+    ctx.beginPath(); ctx.arc(x, y, dotR + 1, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = color;
+    ctx.beginPath(); ctx.arc(x, y, dotR, 0, Math.PI * 2); ctx.fill();
   }
   function clearXhair(canvas) {
     const ctx = canvas.getContext('2d');
