@@ -1,0 +1,209 @@
+<div class="app-header">
+  <h1>PDF Overlay Compare</h1>
+  <span class="badge">REVISION DIFF</span>
+</div>
+<div class="main-layout">
+  <div class="sidebar">
+    <div>
+      <div class="section-title">Input Files</div>
+      <div style="display:flex;flex-direction:column;gap:8px;">
+        <div class="upload-zone old-zone" id="zone-old">
+          <input type="file" id="file-old" accept=".pdf" />
+          <div class="upload-icon" id="icon-old" style="font-size:22px;">■</div>
+          <div class="upload-label">Old Revision</div>
+          <div class="upload-sublabel">Drop or click to upload PDF</div>
+          <div class="file-name" id="name-old"></div>
+        </div>
+        <div class="upload-zone new-zone" id="zone-new">
+          <input type="file" id="file-new" accept=".pdf" />
+          <div class="upload-icon" id="icon-new" style="font-size:22px;">■</div>
+          <div class="upload-label">New Revision</div>
+          <div class="upload-sublabel">Drop or click to upload PDF</div>
+          <div class="file-name" id="name-new"></div>
+        </div>
+      </div>
+    </div>
+    <button class="action-btn" id="btn-compare" disabled onclick="runCompare()">Compare Revisions</button>
+    <div>
+      <div class="section-title">Display Mode</div>
+      <div class="toggle-row">
+        <button class="toggle-btn active" id="mode-overlay" onclick="setMode('overlay')">Overlay</button>
+        <button class="toggle-btn" id="mode-sidebyside" onclick="setMode('sidebyside')">Side by Side</button>
+      </div>
+    </div>
+    <div>
+      <div class="section-title">Visibility</div>
+      <div class="toggle-row">
+        <button class="toggle-btn active" id="vis-old" onclick="toggleVis('old')">Old</button>
+        <button class="toggle-btn active" id="vis-new" onclick="toggleVis('new')">New</button>
+      </div>
+    </div>
+    <div class="control-group">
+      <div class="section-title">Colors</div>
+      <div class="color-row"><label id="label-color-old">Old Revision</label><input type="color" id="color-old" value="#2979ff" /></div>
+      <div class="color-row"><label id="label-color-new">New Revision</label><input type="color" id="color-new" value="#ff1744" /></div>
+      <div class="section-title" style="margin-top:8px;">Presets</div>
+      <div class="preset-grid" id="preset-grid"></div>
+    </div>
+    <div class="control-group">
+      <div class="section-title">Render Quality (PPI)</div>
+      <select class="ppi-select" id="ppi-select" onchange="changePPI()">
+        <option value="72">72 PPI — Fast / Draft</option>
+        <option value="150" selected>150 PPI — Standard</option>
+        <option value="200">200 PPI — High</option>
+        <option value="300">300 PPI — Print Quality</option>
+      </select>
+      <div class="ppi-hint">Higher PPI = sharper but slower to render</div>
+    </div>
+    <div class="control-group">
+      <div class="section-title">Opacity</div>
+      <div class="control-row"><span class="control-label" id="label-opacity-old">Old</span><span class="control-value" id="val-opacity-old">70%</span></div>
+      <input type="range" id="slider-opacity-old" min="0" max="100" value="70" oninput="updateOpacity()" />
+      <div class="control-row" style="margin-top:2px;"><span class="control-label" id="label-opacity-new">New</span><span class="control-value" id="val-opacity-new">70%</span></div>
+      <input type="range" id="slider-opacity-new" min="0" max="100" value="70" oninput="updateOpacity()" />
+    </div>
+    <div class="control-group">
+      <div class="section-title">Scale</div>
+      <div class="offset-wrap">
+        <div class="offset-axis">
+          <div class="offset-axis-header"><span class="offset-label" id="label-scale-old">Old</span><input type="number" class="offset-input" id="input-scale-old" value="100" step="1" min="10" max="500" onchange="inputScale()" oninput="inputScale()" /><span class="offset-unit">%</span></div>
+          <input type="range" id="slider-scale-old" min="25" max="200" value="100" step="1" oninput="sliderScale()" />
+        </div>
+        <div class="offset-axis">
+          <div class="offset-axis-header"><span class="offset-label" id="label-scale-new">New</span><input type="number" class="offset-input" id="input-scale-new" value="100" step="1" min="10" max="500" onchange="inputScale()" oninput="inputScale()" /><span class="offset-unit">%</span></div>
+          <input type="range" id="slider-scale-new" min="25" max="200" value="100" step="1" oninput="sliderScale()" />
+        </div>
+        <div class="offset-btn-row" style="margin-top:4px;">
+          <button class="offset-btn" onclick="resetScale()">Reset Both</button>
+          <button class="offset-btn" onclick="matchScale()">Match to New</button>
+        </div>
+        <div class="offset-btn-row"><span class="offset-scope">Apply to: <select id="scale-scope"><option value="page">This page only</option><option value="all">All pages</option></select></span></div>
+        <div class="offset-hint">Slider: 25–200%. Type for finer or wider range (10–500%). Stored per page.</div>
+      </div>
+    </div>
+    <div class="control-group">
+      <div class="section-title">Offset — New Revision</div>
+      <div class="offset-wrap">
+        <div class="offset-axis">
+          <div class="offset-axis-header"><span class="offset-label">X</span><input type="number" class="offset-input" id="offset-x" value="0" step="1" onchange="applyOffset()" oninput="applyOffset()" /><span class="offset-unit">px</span></div>
+          <input type="range" class="offset-slider" id="offset-x-slider" min="-500" max="500" value="0" oninput="sliderToInput('x')" />
+        </div>
+        <div class="offset-axis">
+          <div class="offset-axis-header"><span class="offset-label">Y</span><input type="number" class="offset-input" id="offset-y" value="0" step="1" onchange="applyOffset()" oninput="applyOffset()" /><span class="offset-unit">px</span></div>
+          <input type="range" class="offset-slider" id="offset-y-slider" min="-500" max="500" value="0" oninput="sliderToInput('y')" />
+        </div>
+        <div class="offset-range-row"><span class="offset-range-label">Range ±</span><input type="number" class="offset-range-input" id="offset-range" value="500" min="50" step="50" onchange="updateSliderRange()" /><span class="offset-range-label">px</span></div>
+        <div class="offset-btn-row">
+          <button class="offset-btn" onclick="nudgeOffset(-5,0)">← 5</button>
+          <button class="offset-btn" onclick="nudgeOffset(5,0)">5 →</button>
+          <button class="offset-btn" onclick="nudgeOffset(0,-5)">↑ 5</button>
+          <button class="offset-btn" onclick="nudgeOffset(0,5)">5 ↓</button>
+          <button class="offset-btn" onclick="resetOffset()">Reset</button>
+        </div>
+        <div class="offset-btn-row"><span class="offset-scope">Apply to: <select id="offset-scope"><option value="page">This page only</option><option value="all">All pages</option></select></span></div>
+        <div class="offset-hint">Drag sliders for coarse alignment, type for fine. Stored per page.</div>
+      </div>
+    </div>
+    <div>
+      <div class="section-title">Page Navigation</div>
+      <div class="page-nav">
+        <button class="page-btn" id="btn-prev" disabled onclick="changePage(-1)">←</button>
+        <input type="number" class="page-goto" id="page-goto" value="1" min="1" max="1" onchange="goToPage()" onkeydown="if(event.key==='Enter'){event.target.blur();goToPage();}" />
+        <span class="page-total">/ <span id="page-total">1</span></span>
+        <button class="page-btn" id="btn-next" disabled onclick="changePage(1)">→</button>
+      </div>
+      <div class="cache-status-wrap">
+        <div class="cache-bar-bg"><div class="cache-bar" id="cache-bar"></div></div>
+        <div class="cache-text" id="cache-status">No pages cached</div>
+        <div class="mem-est" id="mem-est"></div>
+        <div style="margin-top:6px;">
+          <div class="control-row"><span class="control-label" style="font-size:11px;">Memory Limit</span><span class="control-value" id="mem-limit-val">4096 MB</span></div>
+          <input type="range" id="mem-limit" min="256" max="8192" step="256" value="4096" oninput="changeMemLimit()" style="width:100%;" />
+          <div class="offset-hint">Controls how much RAM is used for cached page renders. Higher = faster page switching but more memory. Lower if your browser slows down.</div>
+        </div>
+        <div class="cache-controls">
+          <div class="cache-range-row"><span class="offset-range-label">From</span><input type="number" class="cache-range-input" id="cache-from" value="1" min="1" /><span class="offset-range-label">to</span><input type="number" class="cache-range-input" id="cache-to" value="1" min="1" /></div>
+          <div class="cache-btn-row">
+            <button class="offset-btn" onclick="cacheRange()">Cache Range</button>
+            <button class="offset-btn" onclick="cacheAllPages()">Cache All</button>
+            <button class="offset-btn" onclick="clearCache()">Clear Cache</button>
+          </div>
+          <div class="cache-indicator" id="cache-indicator"></div>
+        </div>
+      </div>
+    </div>
+    <div>
+      <div class="section-title">Legend</div>
+      <div class="legend">
+        <div class="legend-item"><div class="legend-swatch" id="swatch-old" style="background:#2979ff;"></div><span>Only in old (removed)</span></div>
+        <div class="legend-item"><div class="legend-swatch" id="swatch-new" style="background:#ff1744;"></div><span>Only in new (added)</span></div>
+        <div class="legend-item"><div class="legend-swatch" id="swatch-overlap" style="background:#7a4dcc;"></div><span>Unchanged (overlap)</span></div>
+      </div>
+    </div>
+    <div class="control-group">
+      <div class="section-title">Save / Load</div>
+      <div class="save-row">
+        <button class="save-btn primary" onclick="savePreset()">💾 Save Preset</button>
+        <button class="save-btn" onclick="DOM.loadInput.click()">📂 Load Preset<input type="file" id="load-input" accept=".json" onchange="loadPreset(event)" /></button>
+      </div>
+      <div class="save-row" style="margin-top:4px;">
+        <button class="save-btn" onclick="exportPNG()">📷 PNG</button>
+        <button class="save-btn" onclick="exportPDF()">📄 PDF</button>
+        <button class="save-btn" id="btn-export-all" onclick="exportAllPDF()">📦 All → PDF</button>
+        <button class="save-btn" id="btn-export-zip" onclick="exportAllPNG()">🗜️ All → ZIP</button>
+      </div>
+      <div class="save-row" style="margin-top:4px;">
+        <button class="save-btn" onclick="setAsDefault()">⚙ Set as Default</button>
+        <button class="save-btn" onclick="resetToDefaults()" style="color:var(--red);">↺ Reset Defaults</button>
+      </div>
+      <div class="offset-hint">Set as Default saves settings to browser. Loads automatically next time.</div>
+    </div>
+  </div>
+  <div class="thumb-panel" id="thumb-panel">
+    <div class="thumb-header">
+      <span>Thumbnails</span>
+      <button class="thumb-close" onclick="toggleThumbs()" title="Close">✕</button>
+    </div>
+    <div style="padding:4px 10px;display:flex;align-items:center;gap:4px;border-bottom:1px solid var(--border);">
+      <span style="font-size:9px;color:var(--text-dim);">PPI</span>
+      <input type="number" id="thumb-ppi" value="18" min="8" max="72" step="1" style="width:36px;padding:2px 3px;border:1px solid var(--border);border-radius:3px;background:var(--surface2);color:var(--text);font-family:'JetBrains Mono',monospace;font-size:9px;text-align:center;outline:none;" onchange="changeThumbPPI()" />
+      <button class="thumb-close" onclick="rebuildThumbsNow()" title="Refresh thumbnails" style="font-size:11px;">⟳</button>
+    </div>
+    <div class="thumb-scroll" id="thumb-scroll"></div>
+  </div>
+  <button class="thumb-toggle" id="thumb-toggle" onclick="toggleThumbs()" title="Toggle thumbnails">☰</button>
+  <div class="canvas-area" id="canvas-area">
+    <div class="canvas-pad" id="canvas-pad">
+      <div id="placeholder" class="placeholder-msg">
+        <div class="icon">⬡</div>
+        <h2>Upload two PDF revisions</h2>
+        <p>Upload old and new versions. Lines from each appear in different colors. Overlapping areas blend together.</p>
+      </div>
+      <div class="canvas-container" id="canvas-container" style="display:none;">
+        <canvas id="canvas-output"></canvas>
+      </div>
+    </div>
+    <!-- Dual-pane side-by-side (hidden by default, shown in sidebyside mode) -->
+    <div class="sbs-wrapper" id="sbs-wrapper" style="display:none;">
+      <div class="sbs-pane" id="sbs-pane-old">
+        <div class="sbs-label" id="sbs-label-old">OLD</div>
+        <div class="sbs-scroll" id="sbs-scroll-old">
+          <div class="sbs-canvas-wrap"><canvas id="sbs-canvas-old"></canvas></div>
+        </div>
+      </div>
+      <div class="sbs-divider"></div>
+      <div class="sbs-pane" id="sbs-pane-new">
+        <div class="sbs-label" id="sbs-label-new">NEW</div>
+        <div class="sbs-scroll" id="sbs-scroll-new">
+          <div class="sbs-canvas-wrap"><canvas id="sbs-canvas-new"></canvas></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+<div class="zoom-bar" id="zoom-bar">
+  <button class="zoom-btn" onclick="doZoom(-0.15)">−</button>
+  <span class="zoom-label" id="zoom-label">100%</span>
+  <button class="zoom-btn" onclick="doZoom(0.15)">+</button>
+  <button class="zoom-btn" onclick="zoomFit()">Fit</button>
+</div>
