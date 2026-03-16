@@ -1591,24 +1591,26 @@ function composite(w, h, imgO, imgN) {
     ctx.globalAlpha = 1;
   } else {
     // Side-by-side: render to two separate canvases
+    // Offset logic: positive ox/oy shifts new right/down, negative shifts old right/down
     const cOld = DOM.sbsCanvasOld, cNew = DOM.sbsCanvasNew;
+    const oldDxSbs = ox < 0 ? absOx : 0, oldDySbs = oy < 0 ? absOy : 0;
+    const newDxSbs = ox > 0 ? ox : 0,    newDySbs = oy > 0 ? oy : 0;
     // Old pane
     if (imgO && visOld) {
-      cOld.width = wO; cOld.height = hO;
+      cOld.width = wO + oldDxSbs; cOld.height = hO + oldDySbs;
       const ctxO = cOld.getContext('2d');
-      ctxO.fillStyle = '#fff'; ctxO.fillRect(0,0,wO,hO);
+      ctxO.fillStyle = '#fff'; ctxO.fillRect(0,0,cOld.width,cOld.height);
       ctxO.globalAlpha = aO;
-      ctxO.drawImage(putImgToTempCanvas(imgO,_tmpCanvasA,_tmpCtxA),0,0,imgO.width,imgO.height,0,0,wO,hO);
+      ctxO.drawImage(putImgToTempCanvas(imgO,_tmpCanvasA,_tmpCtxA),0,0,imgO.width,imgO.height,oldDxSbs,oldDySbs,wO,hO);
       ctxO.globalAlpha = 1;
     } else { cOld.width = 1; cOld.height = 1; }
-    // New pane (with offset)
+    // New pane
     if (imgN && visNew) {
-      const nw = wN + absOx, nh = hN + absOy;
-      cNew.width = nw; cNew.height = nh;
+      cNew.width = wN + newDxSbs; cNew.height = hN + newDySbs;
       const ctxN = cNew.getContext('2d');
-      ctxN.fillStyle = '#fff'; ctxN.fillRect(0,0,nw,nh);
+      ctxN.fillStyle = '#fff'; ctxN.fillRect(0,0,cNew.width,cNew.height);
       ctxN.globalAlpha = aN;
-      ctxN.drawImage(putImgToTempCanvas(imgN,_tmpCanvasB,_tmpCtxB),0,0,imgN.width,imgN.height, ox>=0?ox:0, oy>=0?oy:0, wN,hN);
+      ctxN.drawImage(putImgToTempCanvas(imgN,_tmpCanvasB,_tmpCtxB),0,0,imgN.width,imgN.height,newDxSbs,newDySbs,wN,hN);
       ctxN.globalAlpha = 1;
     } else { cNew.width = 1; cNew.height = 1; }
     // Update labels with colors
