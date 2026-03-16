@@ -220,3 +220,58 @@
     font-size: 9px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px;
     color: var(--text-dim); white-space: nowrap;
   }
+
+  /* Transform sub-sections */
+  .transform-scope-row {
+    display: flex; align-items: center; justify-content: space-between; gap: 6px;
+    margin-bottom: 2px;
+  }
+  .sub-section {
+    border: 1px solid var(--border); border-radius: 6px; overflow: hidden;
+  }
+  .sub-section-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 5px 8px; cursor: pointer; user-select: none;
+    background: var(--surface2); transition: background 0.12s;
+  }
+  .sub-section-header:hover { background: var(--border); }
+  .sub-section-label {
+    font-family: 'JetBrains Mono', monospace; font-size: 10px;
+    font-weight: 600; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.5px;
+  }
+  .sub-section-chevron {
+    font-size: 10px; color: var(--text-dim); transition: transform 0.15s;
+  }
+  .sub-section.collapsed .sub-section-chevron { transform: rotate(-90deg); }
+  .sub-section-body {
+    padding: 8px; display: flex; flex-direction: column; gap: 6px;
+    transition: max-height 0.2s ease;
+  }
+  .sub-section.collapsed .sub-section-body { display: none; }
+
+  /* 3-Point Alignment */
+  .align3-wrap { display: flex; flex-direction: column; gap: 6px; }
+  .align3-status {
+    font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--text-dim);
+    padding: 6px 8px; background: var(--surface2); border-radius: 6px; text-align: center;
+  }
+  .align3-status.active { color: var(--blue); border: 1px solid var(--blue); background: rgba(88,166,255,0.08); }
+  .align3-status.done { color: #3fb950; border: 1px solid #3fb950; background: rgba(63,185,80,0.08); }
+  .align3-btn-row { display: flex; gap: 5px; }
+  .align3-start-btn.active { border-color: var(--red); color: var(--red); }
+  .align3-points { display: flex; flex-direction: column; gap: 3px; }
+  .align3-point-row {
+    display: flex; align-items: center; gap: 6px;
+    font-family: 'JetBrains Mono', monospace; font-size: 9px; color: var(--text-dim);
+  }
+  .align3-point-dot {
+    width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0;
+  }
+  .align3-point-dot.old { background: var(--blue); }
+  .align3-point-dot.new { background: var(--red); }
+  .align3-overlay {
+    position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+    pointer-events: none; z-index: 5;
+  }
+  .align3-overlay.picking { pointer-events: auto; cursor: crosshair; }
+  .canvas-container { position: relative; }
