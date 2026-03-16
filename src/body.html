@@ -63,46 +63,95 @@
       <input type="range" id="slider-opacity-new" min="0" max="100" value="70" oninput="updateOpacity()" />
     </div>
     <div class="control-group">
-      <div class="section-title">Scale</div>
-      <div class="offset-wrap">
-        <div class="offset-axis">
-          <div class="offset-axis-header"><span class="offset-label" id="label-scale-old">Old</span><input type="number" class="offset-input" id="input-scale-old" value="100" step="1" min="10" max="500" onchange="inputScale()" oninput="inputScale()" /><span class="offset-unit">%</span></div>
-          <input type="range" id="slider-scale-old" min="25" max="200" value="100" step="1" oninput="sliderScale()" />
-        </div>
-        <div class="offset-axis">
-          <div class="offset-axis-header"><span class="offset-label" id="label-scale-new">New</span><input type="number" class="offset-input" id="input-scale-new" value="100" step="1" min="10" max="500" onchange="inputScale()" oninput="inputScale()" /><span class="offset-unit">%</span></div>
-          <input type="range" id="slider-scale-new" min="25" max="200" value="100" step="1" oninput="sliderScale()" />
-        </div>
-        <div class="offset-btn-row" style="margin-top:4px;">
-          <button class="offset-btn" onclick="resetScale()">Reset Both</button>
-          <button class="offset-btn" onclick="matchScale()">Match to New</button>
-        </div>
-        <div class="offset-btn-row"><span class="offset-scope">Apply to: <select id="scale-scope"><option value="page">This page only</option><option value="all">All pages</option></select></span></div>
-        <div class="offset-hint">Slider: 25–200%. Type for finer or wider range (10–500%). Stored per page.</div>
+      <div class="section-title">Transform — New Revision</div>
+      <div class="transform-scope-row"><span class="offset-scope">Apply to: <select id="transform-scope"><option value="page">This page only</option><option value="all">All pages</option></select></span>
+        <button class="offset-btn" onclick="resetAllTransforms()">Reset All</button>
       </div>
-    </div>
-    <div class="control-group">
-      <div class="section-title">Offset — New Revision</div>
-      <div class="offset-wrap">
-        <div class="offset-axis">
-          <div class="offset-axis-header"><span class="offset-label">X</span><input type="number" class="offset-input" id="offset-x" value="0" step="1" onchange="applyOffset()" oninput="applyOffset()" /><span class="offset-unit">px</span></div>
-          <input type="range" class="offset-slider" id="offset-x-slider" min="-500" max="500" value="0" oninput="sliderToInput('x')" />
+      <!-- Scale sub-section -->
+      <div class="sub-section">
+        <div class="sub-section-header" onclick="toggleSubSection(this)">
+          <span class="sub-section-label">Scale</span><span class="sub-section-chevron">▾</span>
         </div>
-        <div class="offset-axis">
-          <div class="offset-axis-header"><span class="offset-label">Y</span><input type="number" class="offset-input" id="offset-y" value="0" step="1" onchange="applyOffset()" oninput="applyOffset()" /><span class="offset-unit">px</span></div>
-          <input type="range" class="offset-slider" id="offset-y-slider" min="-500" max="500" value="0" oninput="sliderToInput('y')" />
+        <div class="sub-section-body">
+          <div class="offset-wrap">
+            <div class="offset-axis">
+              <div class="offset-axis-header"><span class="offset-label" id="label-scale-old">Old</span><input type="number" class="offset-input" id="input-scale-old" value="100" step="1" min="10" max="500" onchange="inputScale()" oninput="inputScale()" /><span class="offset-unit">%</span></div>
+              <input type="range" id="slider-scale-old" min="25" max="200" value="100" step="1" oninput="sliderScale()" />
+            </div>
+            <div class="offset-axis">
+              <div class="offset-axis-header"><span class="offset-label" id="label-scale-new">New</span><input type="number" class="offset-input" id="input-scale-new" value="100" step="1" min="10" max="500" onchange="inputScale()" oninput="inputScale()" /><span class="offset-unit">%</span></div>
+              <input type="range" id="slider-scale-new" min="25" max="200" value="100" step="1" oninput="sliderScale()" />
+            </div>
+            <div class="offset-btn-row" style="margin-top:4px;">
+              <button class="offset-btn" onclick="resetScale()">Reset Both</button>
+              <button class="offset-btn" onclick="matchScale()">Match to New</button>
+            </div>
+            <div class="offset-hint">Slider: 25–200%. Type for finer or wider range (10–500%).</div>
+          </div>
         </div>
-        <div class="offset-range-row"><span class="offset-range-label">Range ±</span><input type="number" class="offset-range-input" id="offset-range" value="500" min="50" step="50" onchange="updateSliderRange()" /><span class="offset-range-label">px</span></div>
-        <div class="offset-btn-row">
-          <button class="offset-btn" onclick="nudgeOffset(-5,0)">← 5</button>
-          <button class="offset-btn" onclick="nudgeOffset(5,0)">5 →</button>
-          <button class="offset-btn" onclick="nudgeOffset(0,-5)">↑ 5</button>
-          <button class="offset-btn" onclick="nudgeOffset(0,5)">5 ↓</button>
-          <button class="offset-btn" onclick="resetOffset()">Reset</button>
-        </div>
-        <div class="offset-btn-row"><span class="offset-scope">Apply to: <select id="offset-scope"><option value="page">This page only</option><option value="all">All pages</option></select></span></div>
-        <div class="offset-hint">Drag sliders for coarse alignment, type for fine. Stored per page.</div>
       </div>
+      <!-- Translation sub-section -->
+      <div class="sub-section">
+        <div class="sub-section-header" onclick="toggleSubSection(this)">
+          <span class="sub-section-label">Translation</span><span class="sub-section-chevron">▾</span>
+        </div>
+        <div class="sub-section-body">
+          <div class="offset-wrap">
+            <div class="offset-axis">
+              <div class="offset-axis-header"><span class="offset-label">X</span><input type="number" class="offset-input" id="offset-x" value="0" step="1" onchange="applyOffset()" oninput="applyOffset()" /><span class="offset-unit">px</span></div>
+              <input type="range" class="offset-slider" id="offset-x-slider" min="-500" max="500" value="0" oninput="sliderToInput('x')" />
+            </div>
+            <div class="offset-axis">
+              <div class="offset-axis-header"><span class="offset-label">Y</span><input type="number" class="offset-input" id="offset-y" value="0" step="1" onchange="applyOffset()" oninput="applyOffset()" /><span class="offset-unit">px</span></div>
+              <input type="range" class="offset-slider" id="offset-y-slider" min="-500" max="500" value="0" oninput="sliderToInput('y')" />
+            </div>
+            <div class="offset-range-row"><span class="offset-range-label">Range ±</span><input type="number" class="offset-range-input" id="offset-range" value="500" min="50" step="50" onchange="updateSliderRange()" /><span class="offset-range-label">px</span></div>
+            <div class="offset-btn-row">
+              <button class="offset-btn" onclick="nudgeOffset(-5,0)">← 5</button>
+              <button class="offset-btn" onclick="nudgeOffset(5,0)">5 →</button>
+              <button class="offset-btn" onclick="nudgeOffset(0,-5)">↑ 5</button>
+              <button class="offset-btn" onclick="nudgeOffset(0,5)">5 ↓</button>
+              <button class="offset-btn" onclick="resetOffset()">Reset</button>
+            </div>
+            <div class="offset-hint">Drag sliders for coarse, type for fine.</div>
+          </div>
+        </div>
+      </div>
+      <!-- Rotation sub-section -->
+      <div class="sub-section">
+        <div class="sub-section-header" onclick="toggleSubSection(this)">
+          <span class="sub-section-label">Rotation</span><span class="sub-section-chevron">▾</span>
+        </div>
+        <div class="sub-section-body">
+          <div class="offset-wrap">
+            <div class="offset-axis-header">
+              <span class="offset-label">Deg</span>
+              <input type="number" class="offset-input" id="input-rotation" value="0" step="0.1" onchange="applyRotation()" oninput="applyRotation()" />
+              <span class="offset-unit">°</span>
+              <button class="offset-btn" onclick="resetRotation()">Reset</button>
+            </div>
+            <div class="offset-hint">Rotate new revision around its center. Positive = clockwise.</div>
+          </div>
+        </div>
+      </div>
+      <!-- 3-Point Alignment sub-section -->
+      <div class="sub-section">
+        <div class="sub-section-header" onclick="toggleSubSection(this)">
+          <span class="sub-section-label">3-Point Align</span><span class="sub-section-chevron">▾</span>
+        </div>
+        <div class="sub-section-body">
+          <div class="align3-wrap" id="align3-wrap">
+            <div class="align3-status" id="align3-status">Pick 3 matching point pairs to align PDFs.</div>
+            <div class="align3-btn-row">
+              <button class="offset-btn align3-start-btn" id="align3-start" onclick="startAlign3()">Start Picking</button>
+              <button class="offset-btn" id="align3-clear" onclick="clearAlign3()" style="display:none;">Clear</button>
+            </div>
+            <div class="align3-points" id="align3-points"></div>
+            <div class="offset-hint">Click 3 points on old PDF, then 3 matching points on new. Computes translation, rotation &amp; scale.</div>
+          </div>
+        </div>
+      </div>
+      <div class="offset-hint">All transforms stored per page.</div>
     </div>
     <div>
       <div class="section-title">Page Navigation</div>
@@ -181,6 +230,7 @@
       </div>
       <div class="canvas-container" id="canvas-container" style="display:none;">
         <canvas id="canvas-output"></canvas>
+        <canvas id="align3-overlay" class="align3-overlay"></canvas>
       </div>
     </div>
     <!-- Dual-pane side-by-side (hidden by default, shown in sidebyside mode) -->

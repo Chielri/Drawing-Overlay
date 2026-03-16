@@ -18,7 +18,7 @@ const DOM = {
   valOpacityOld: $('val-opacity-old'), valOpacityNew: $('val-opacity-new'),
   sliderScaleOld: $('slider-scale-old'), sliderScaleNew: $('slider-scale-new'),
   inputScaleOld: $('input-scale-old'), inputScaleNew: $('input-scale-new'),
-  scaleScope: $('scale-scope'),
+  transformScope: $('transform-scope'),
   ppiSelect: $('ppi-select'),
   btnCompare: $('btn-compare'),
   modeOverlay: $('mode-overlay'), modeSidebyside: $('mode-sidebyside'),
@@ -32,7 +32,7 @@ const DOM = {
   cacheFrom: $('cache-from'), cacheTo: $('cache-to'), memLimit: $('mem-limit'), memLimitVal: $('mem-limit-val'),
   offsetX: $('offset-x'), offsetY: $('offset-y'),
   offsetXSlider: $('offset-x-slider'), offsetYSlider: $('offset-y-slider'),
-  offsetRange: $('offset-range'), offsetScope: $('offset-scope'),
+  offsetRange: $('offset-range'),
   thumbPanel: $('thumb-panel'), thumbToggle: $('thumb-toggle'),
   thumbScroll: $('thumb-scroll'), thumbPPIInput: $('thumb-ppi'),
   presetGrid: $('preset-grid'),
@@ -47,6 +47,12 @@ const DOM = {
   drawToolbar: $('draw-toolbar'),
   drawColor: $('draw-color'), drawWidth: $('draw-width'),
   xhairColor: $('xhair-color'), xhairSize: $('xhair-size'),
+  // Transform
+  inputRotation: $('input-rotation'),
+  // 3-point alignment
+  align3Status: $('align3-status'), align3Start: $('align3-start'),
+  align3Clear: $('align3-clear'), align3Points: $('align3-points'),
+  align3Overlay: $('align3-overlay'),
 };
 
 // ═══════════════════════════════════════
@@ -65,6 +71,16 @@ let cacheAbort = false;
 let pageOffsets = {};
 let pageScales = {};
 let hasRenderedOnce = false;
+
+// Per-page rotation (degrees)
+let pageRotations = {};        // { "1": 5.0, "2": 0, ... }
+
+// 3-point alignment state
+let pageTransforms = {};       // { "1": {a,b,c,d,e,f}, ... } — affine matrix per page
+let align3Active = false;      // picking mode on/off
+let align3Phase = 'old';       // 'old' or 'new' — which PDF we're picking points for
+let align3PointsOld = [];      // [{x,y}, ...] up to 3
+let align3PointsNew = [];      // [{x,y}, ...] up to 3
 
 // LRU cache management — uses a Set for O(1) has/delete + Array for order
 let lruOrder = [];
@@ -181,11 +197,10 @@ const HARDCODED_DEFAULTS = {
   opacityOld: 70, opacityNew: 70,
   ppi: '150', mode: 'overlay',
   visOld: true, visNew: true,
-  offsetRange: 500, offsetScope: 'page',
+  offsetRange: 500, transformScope: 'page',
   thumbPPI: 18,
   memLimitMB: 4096,
-  scaleOld: 100, scaleNew: 100,
-  scaleScope: 'page'
+  scaleOld: 100, scaleNew: 100
 };
 
 function getDefaults() {
@@ -210,7 +225,7 @@ function applyDefaults(d) {
   visOld = d.visOld; visNew = d.visNew;
   DOM.offsetRange.value = d.offsetRange;
   updateSliderRange();
-  DOM.offsetScope.value = d.offsetScope;
+  DOM.transformScope.value = d.transformScope || d.offsetScope || d.scaleScope || 'page';
   thumbPPI = d.thumbPPI || 18;
   DOM.thumbPPIInput.value = thumbPPI;
   cacheMemLimitMB = d.memLimitMB || 4096;
@@ -220,7 +235,6 @@ function applyDefaults(d) {
   DOM.inputScaleNew.value = d.scaleNew || 100;
   DOM.sliderScaleOld.value = Math.max(25, Math.min(200, d.scaleOld || 100));
   DOM.sliderScaleNew.value = Math.max(25, Math.min(200, d.scaleNew || 100));
-  DOM.scaleScope.value = d.scaleScope || 'page';
   syncColors();
 }
 
@@ -231,11 +245,10 @@ function gatherUISettings() {
     opacityNew: parseInt(DOM.sliderOpacityNew.value),
     ppi: DOM.ppiSelect.value, mode, visOld, visNew,
     offsetRange: parseInt(DOM.offsetRange.value) || 500,
-    offsetScope: DOM.offsetScope.value,
+    transformScope: DOM.transformScope.value,
     thumbPPI, memLimitMB: cacheMemLimitMB,
     scaleOld: parseInt(DOM.inputScaleOld.value) || 100,
-    scaleNew: parseInt(DOM.inputScaleNew.value) || 100,
-    scaleScope: DOM.scaleScope.value
+    scaleNew: parseInt(DOM.inputScaleNew.value) || 100
   };
 }
 
@@ -266,6 +279,8 @@ function resetToDefaults() {
   DOM.offsetXSlider.value = 0;
   DOM.offsetYSlider.value = 0;
   pageScales = {};
+  pageRotations = {};
+  pageTransforms = {};
   currentZoom = 1;
   applyDefaults(HARDCODED_DEFAULTS);
   document.querySelectorAll('.preset-pill').forEach((el, i) => el.classList.toggle('selected', i === 0));
@@ -290,11 +305,15 @@ function syncColors() {
   const cOld = DOM.colorOld.value, cNew = DOM.colorNew.value;
   if (DOM.zoneOld.classList.contains('has-file')) { DOM.zoneOld.style.borderColor = cOld; DOM.zoneOld.style.background = hexToDim(cOld); }
   if (DOM.zoneNew.classList.contains('has-file')) { DOM.zoneNew.style.borderColor = cNew; DOM.zoneNew.style.background = hexToDim(cNew); }
-  DOM.swatchOld.style.background = cOld;
-  DOM.swatchNew.style.background = cNew;
   const oA = parseInt(DOM.sliderOpacityOld.value)/100;
   const oB = parseInt(DOM.sliderOpacityNew.value)/100;
-  const ov = blendOverlap(hexToRgb(cOld), oA, hexToRgb(cNew), oB);
+  const rgbOld = hexToRgb(cOld), rgbNew = hexToRgb(cNew);
+  // Show opacity-adjusted colors over white so legend matches canvas appearance
+  const sO = [Math.round(255*(1-oA)+rgbOld[0]*oA), Math.round(255*(1-oA)+rgbOld[1]*oA), Math.round(255*(1-oA)+rgbOld[2]*oA)];
+  const sN = [Math.round(255*(1-oB)+rgbNew[0]*oB), Math.round(255*(1-oB)+rgbNew[1]*oB), Math.round(255*(1-oB)+rgbNew[2]*oB)];
+  DOM.swatchOld.style.background = `rgb(${sO[0]},${sO[1]},${sO[2]})`;
+  DOM.swatchNew.style.background = `rgb(${sN[0]},${sN[1]},${sN[2]})`;
+  const ov = blendOverlap(rgbOld, oA, rgbNew, oB);
   DOM.swatchOverlap.style.background = `rgb(${ov[0]},${ov[1]},${ov[2]})`;
   DOM.visOldBtn.classList.toggle('active', visOld); DOM.visNewBtn.classList.toggle('active', visNew);
   if (visOld) { DOM.visOldBtn.style.color=cOld; DOM.visOldBtn.style.borderColor=cOld; DOM.visOldBtn.style.background=hexToDim(cOld); }
@@ -643,7 +662,49 @@ function composite(w, h, imgO, imgN) {
   const wO = imgO ? imgO.width * sO : 0, hO = imgO ? imgO.height * sO : 0;
   const wN = imgN ? imgN.width * sN : 0, hN = imgN ? imgN.height * sN : 0;
 
+  const xform = getPageTransform(currentPage);
+
   if (mode === 'overlay') {
+    if (xform) {
+      // Affine transform mode: old stays fixed, new is transformed
+      // Compute bounding box of transformed new image to size canvas
+      const corners = [[0,0],[imgN.width,0],[0,imgN.height],[imgN.width,imgN.height]];
+      let minX=0, minY=0, maxX=wO, maxY=hO;
+      corners.forEach(([px,py]) => {
+        const cx = xform.a*sN*px + xform.b*sN*py + xform.e;
+        const cy = xform.c*sN*px + xform.d*sN*py + xform.f;
+        maxX = Math.max(maxX, cx); maxY = Math.max(maxY, cy);
+        minX = Math.min(minX, cx); minY = Math.min(minY, cy);
+      });
+      const canvasW = Math.ceil(maxX - minX);
+      const canvasH = Math.ceil(maxY - minY);
+      out.width = canvasW; out.height = canvasH;
+      const ctx = out.getContext('2d');
+      ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, canvasW, canvasH);
+      // Draw old PDF normally (scaled)
+      if (imgO && visOld) {
+        ctx.globalAlpha = aO;
+        ctx.drawImage(putImgToTempCanvas(imgO, _tmpCanvasA, _tmpCtxA), 0, 0, imgO.width, imgO.height, 0, 0, wO, hO);
+      }
+      // Draw new PDF with affine transform
+      if (imgN && visNew) {
+        ctx.globalAlpha = aN;
+        ctx.save();
+        // The affine transform maps new-image coords → old-image coords
+        // Canvas setTransform(a, c, b, d, e, f) — note the parameter order!
+        // setTransform(horizontalScaling, verticalSkewing, horizontalSkewing, verticalScaling, horizontalTranslation, verticalTranslation)
+        // Our transform: dst.x = a*src.x + b*src.y + e, dst.y = c*src.x + d*src.y + f
+        // We need to account for the per-layer scale: the new image is drawn at sN scale
+        // The transform was computed on composite-space coords, so we need to compose with sN
+        ctx.setTransform(xform.a * sN, xform.c * sN, xform.b * sN, xform.d * sN, xform.e, xform.f);
+        ctx.drawImage(putImgToTempCanvas(imgN, _tmpCanvasB, _tmpCtxB), 0, 0);
+        ctx.restore();
+      }
+      ctx.globalAlpha = 1;
+    } else {
+    // Standard offset-based alignment (with optional rotation)
+    const rotDeg = getPageRotation(currentPage);
+    const rotRad = rotDeg * Math.PI / 180;
     const totalW = Math.max(wO, wN + absOx), totalH = Math.max(hO, hN + absOy);
     const canvasW = Math.max(wO + (ox < 0 ? absOx : 0), wN + (ox > 0 ? ox : 0), totalW);
     const canvasH = Math.max(hO + (oy < 0 ? absOy : 0), hN + (oy > 0 ? oy : 0), totalH);
@@ -653,8 +714,22 @@ function composite(w, h, imgO, imgN) {
     const ctx = out.getContext('2d');
     ctx.fillStyle = '#fff'; ctx.fillRect(0,0,canvasW,canvasH);
     if (imgO && visOld) { ctx.globalAlpha=aO; ctx.drawImage(putImgToTempCanvas(imgO,_tmpCanvasA,_tmpCtxA),0,0,imgO.width,imgO.height,oldDx,oldDy,wO,hO); }
-    if (imgN && visNew) { ctx.globalAlpha=aN; ctx.drawImage(putImgToTempCanvas(imgN,_tmpCanvasB,_tmpCtxB),0,0,imgN.width,imgN.height,newDx,newDy,wN,hN); }
+    if (imgN && visNew) {
+      ctx.globalAlpha=aN;
+      if (Math.abs(rotDeg) > 0.001) {
+        // Rotate new image around its center position on the canvas
+        const cx = newDx + wN / 2, cy = newDy + hN / 2;
+        ctx.save();
+        ctx.translate(cx, cy);
+        ctx.rotate(rotRad);
+        ctx.drawImage(putImgToTempCanvas(imgN,_tmpCanvasB,_tmpCtxB),0,0,imgN.width,imgN.height,-wN/2,-hN/2,wN,hN);
+        ctx.restore();
+      } else {
+        ctx.drawImage(putImgToTempCanvas(imgN,_tmpCanvasB,_tmpCtxB),0,0,imgN.width,imgN.height,newDx,newDy,wN,hN);
+      }
+    }
     ctx.globalAlpha = 1;
+    }
   } else {
     // Side-by-side: render to two separate canvases
     // Offset logic: positive ox/oy shifts new right/down, negative shifts old right/down
@@ -762,7 +837,7 @@ function inputScale() {
 function _applyScale() {
   const sO = parseInt(DOM.inputScaleOld.value) || 100;
   const sN = parseInt(DOM.inputScaleNew.value) || 100;
-  if (DOM.scaleScope.value === 'all') {
+  if (DOM.transformScope.value === 'all') {
     for (let p = 1; p <= maxPages; p++) setPageScale(p, sO, sN);
   } else {
     setPageScale(currentPage, sO, sN);
@@ -771,7 +846,7 @@ function _applyScale() {
   scheduleThumbRefresh();
 }
 function resetScale() {
-  if (DOM.scaleScope.value === 'all') {
+  if (DOM.transformScope.value === 'all') {
     pageScales = {};
   } else {
     delete pageScales[String(currentPage)];
@@ -782,7 +857,7 @@ function resetScale() {
 }
 function matchScale() {
   const sN = parseInt(DOM.inputScaleNew.value) || 100;
-  if (DOM.scaleScope.value === 'all') {
+  if (DOM.transformScope.value === 'all') {
     for (let p = 1; p <= maxPages; p++) { const s = getPageScale(p); setPageScale(p, sN, s.new); }
   } else {
     const s = getPageScale(currentPage); setPageScale(currentPage, sN, s.new);
@@ -832,6 +907,11 @@ async function changePPI() {
       pageOffsets[key].x = Math.round(pageOffsets[key].x * ratio);
       pageOffsets[key].y = Math.round(pageOffsets[key].y * ratio);
     }
+    // Scale affine transform translations proportionally
+    for (const key in pageTransforms) {
+      pageTransforms[key].e *= ratio;
+      pageTransforms[key].f *= ratio;
+    }
     loadOffsetUI();
   }
   cacheAbort = true; await sleep(50); cacheAbort = false;
@@ -847,8 +927,27 @@ async function changePPI() {
 }
 
 // ═══════════════════════════════════════
-//  SCALE — per-page, rAF-gated composite via recolorAndComposite()
+//  TRANSFORM — unified scale, translation, rotation, 3-point align
 // ═══════════════════════════════════════
+
+// -- Sub-section toggle --
+function toggleSubSection(headerEl) {
+  headerEl.parentElement.classList.toggle('collapsed');
+}
+// -- Reset all transforms for scope --
+function resetAllTransforms() {
+  const all = DOM.transformScope.value === 'all';
+  if (all) { pageScales = {}; pageOffsets = {}; pageRotations = {}; pageTransforms = {}; }
+  else {
+    const p = String(currentPage);
+    delete pageScales[p]; delete pageOffsets[p]; delete pageRotations[p]; delete pageTransforms[p];
+  }
+  loadTransformUI();
+  if (rawOld || rawNew) recolorAndComposite();
+  scheduleThumbRefresh();
+}
+
+// -- Scale --
 function getPageScale(page) { return pageScales[String(page)] || { old: 100, new: 100 }; }
 function setPageScale(page, sOld, sNew) { pageScales[String(page)] = { old: sOld, new: sNew }; }
 function loadScaleUI() {
@@ -859,18 +958,46 @@ function loadScaleUI() {
   DOM.sliderScaleNew.value = Math.max(25, Math.min(200, s.new));
 }
 
-// ═══════════════════════════════════════
-//  OFFSET — rAF-gated composite via recolorAndComposite()
-// ═══════════════════════════════════════
+// -- Rotation --
+function getPageRotation(page) { return pageRotations[String(page)] || 0; }
+function setPageRotation(page, deg) { pageRotations[String(page)] = deg; }
+function loadRotationUI() {
+  DOM.inputRotation.value = getPageRotation(currentPage);
+}
+function applyRotation() {
+  const deg = parseFloat(DOM.inputRotation.value) || 0;
+  if (DOM.transformScope.value === 'all') {
+    for (let p = 1; p <= maxPages; p++) setPageRotation(p, deg);
+  } else {
+    setPageRotation(currentPage, deg);
+  }
+  if (rawOld || rawNew) recolorAndComposite();
+  scheduleThumbRefresh();
+}
+function resetRotation() {
+  if (DOM.transformScope.value === 'all') pageRotations = {};
+  else delete pageRotations[String(currentPage)];
+  loadRotationUI();
+  if (rawOld || rawNew) recolorAndComposite();
+  scheduleThumbRefresh();
+}
+
+// -- Translation (offset) --
 function getPageOffset(page) { return pageOffsets[String(page)] || {x:0,y:0}; }
 function setPageOffset(page, x, y) { pageOffsets[String(page)] = {x,y}; }
-function loadOffsetUI() {
+
+// -- Load all transform UI for current page --
+function loadTransformUI() {
   const off = getPageOffset(currentPage);
   DOM.offsetX.value = off.x;
   DOM.offsetY.value = off.y;
   syncSliders();
   loadScaleUI();
+  loadRotationUI();
+  if (typeof updateAlign3UI === 'function') updateAlign3UI();
 }
+// Legacy alias — many call sites use loadOffsetUI
+function loadOffsetUI() { loadTransformUI(); }
 function syncSliders() {
   const x=parseInt(DOM.offsetX.value)||0, y=parseInt(DOM.offsetY.value)||0;
   DOM.offsetXSlider.value = Math.max(parseInt(DOM.offsetXSlider.min),Math.min(parseInt(DOM.offsetXSlider.max),x));
@@ -891,14 +1018,14 @@ function updateSliderRange() {
 function applyOffset() {
   const x=parseInt(DOM.offsetX.value)||0, y=parseInt(DOM.offsetY.value)||0;
   syncSliders();
-  if (DOM.offsetScope.value==='all') { for(let p=1;p<=maxPages;p++) setPageOffset(p,x,y); }
+  if (DOM.transformScope.value==='all') { for(let p=1;p<=maxPages;p++) setPageOffset(p,x,y); }
   else setPageOffset(currentPage,x,y);
   // FIX: rAF-gated — slider fires 60+ Hz, but we render max once/frame
   if (rawOld||rawNew) recolorAndComposite();
   scheduleThumbRefresh();
 }
 function nudgeOffset(dx,dy) {
-  const scope=DOM.offsetScope.value;
+  const scope=DOM.transformScope.value;
   if (scope==='all') { for(let p=1;p<=maxPages;p++){const o=getPageOffset(p);setPageOffset(p,o.x+dx,o.y+dy);} }
   else { const o=getPageOffset(currentPage); setPageOffset(currentPage,o.x+dx,o.y+dy); }
   loadOffsetUI();
@@ -906,7 +1033,7 @@ function nudgeOffset(dx,dy) {
   scheduleThumbRefresh();
 }
 function resetOffset() {
-  if (DOM.offsetScope.value==='all') pageOffsets={};
+  if (DOM.transformScope.value==='all') pageOffsets={};
   else delete pageOffsets[String(currentPage)];
   loadOffsetUI();
   if (rawOld||rawNew) recolorAndComposite();
@@ -949,7 +1076,7 @@ async function savePreset() {
   const btn = document.querySelector('.save-btn.primary');
   btn.textContent = '⏳ Saving…'; btn.style.pointerEvents = 'none';
   await sleep(50);
-  const preset = { version:2, ...gatherUISettings(), pageOffsets: JSON.parse(JSON.stringify(pageOffsets)), pageScales: JSON.parse(JSON.stringify(pageScales)), maxPages, currentPage,
+  const preset = { version:2, ...gatherUISettings(), pageOffsets: JSON.parse(JSON.stringify(pageOffsets)), pageScales: JSON.parse(JSON.stringify(pageScales)), pageRotations: JSON.parse(JSON.stringify(pageRotations)), pageTransforms: JSON.parse(JSON.stringify(pageTransforms)), maxPages, currentPage,
     fileOld: DOM.nameOld.textContent||'', fileNew: DOM.nameNew.textContent||'', savedAt: new Date().toISOString() };
   if (pdfBufOld) preset.pdfOldB64 = bufToBase64(pdfBufOld);
   if (pdfBufNew) preset.pdfNewB64 = bufToBase64(pdfBufNew);
@@ -975,10 +1102,11 @@ async function loadPreset(e) {
   if (p.mode) { mode=p.mode; setMode(mode); }
   if (p.visOld!=null) visOld=p.visOld; if(p.visNew!=null) visNew=p.visNew;
   if (p.offsetRange) { DOM.offsetRange.value=p.offsetRange; updateSliderRange(); }
-  if (p.offsetScope) DOM.offsetScope.value=p.offsetScope;
+  if (p.transformScope) DOM.transformScope.value=p.transformScope;
+  else if (p.offsetScope) DOM.transformScope.value=p.offsetScope;
   if (p.thumbPPI) { thumbPPI=p.thumbPPI; DOM.thumbPPIInput.value=thumbPPI; }
   if (p.memLimitMB) { cacheMemLimitMB=p.memLimitMB; DOM.memLimit.value=cacheMemLimitMB; }
-  if (p.scaleScope) DOM.scaleScope.value=p.scaleScope;
+  // Legacy: scaleScope fallback handled above via transformScope || offsetScope
   if (p.pageScales) pageScales=p.pageScales;
   else if (p.scaleOld!=null || p.scaleNew!=null) {
     // Legacy: convert global scale to per-page for all pages
@@ -989,6 +1117,8 @@ async function loadPreset(e) {
       for (let i = 1; i <= mp; i++) pageScales[String(i)] = { old: sO, new: sN };
     }
   }
+  if (p.pageTransforms) pageTransforms=p.pageTransforms;
+  if (p.pageRotations) pageRotations=p.pageRotations;
   if (p.pageOffsets) pageOffsets=p.pageOffsets;
   if (p.pdfOldB64 && p.pdfNewB64) {
     DOM.btnCompare.textContent='Parsing old PDF…'; await sleep(30);
@@ -1376,10 +1506,302 @@ function changeThumbPPI() {
 }
 
 // ═══════════════════════════════════════
+//  3-POINT ALIGNMENT
+// ═══════════════════════════════════════
+function getPageTransform(page) { return pageTransforms[String(page)] || null; }
+function setPageTransform(page, t) { pageTransforms[String(page)] = t; }
+function clearPageTransform(page) { delete pageTransforms[String(page)]; }
+
+function startAlign3() {
+  if (align3Active) { cancelAlign3(); return; }
+  if (!rawOld || !rawNew) { alert('Compare PDFs first before aligning.'); return; }
+  align3Active = true;
+  align3Phase = 'old';
+  align3PointsOld = [];
+  align3PointsNew = [];
+  DOM.align3Start.textContent = 'Cancel';
+  DOM.align3Start.classList.add('active');
+  DOM.align3Overlay.classList.add('picking');
+  updateAlign3UI();
+}
+
+function cancelAlign3() {
+  align3Active = false;
+  align3Phase = 'old';
+  align3PointsOld = [];
+  align3PointsNew = [];
+  DOM.align3Start.textContent = 'Start Alignment';
+  DOM.align3Start.classList.remove('active');
+  DOM.align3Overlay.classList.remove('picking');
+  drawAlign3Markers();
+  updateAlign3UI();
+}
+
+function clearAlign3() {
+  const scope = DOM.transformScope.value;
+  if (scope === 'all') {
+    pageOffsets = {}; pageScales = {}; pageRotations = {}; pageTransforms = {};
+  } else {
+    const p = String(currentPage);
+    delete pageOffsets[p]; delete pageScales[p]; delete pageRotations[p]; delete pageTransforms[p];
+  }
+  cancelAlign3();
+  loadTransformUI();
+  if (rawOld || rawNew) recolorAndComposite();
+  scheduleThumbRefresh();
+}
+
+function updateAlign3UI() {
+  const el = DOM.align3Status;
+  const pts = DOM.align3Points;
+  // Check if any transform values have been set (offset, scale, rotation, or affine)
+  const off = getPageOffset(currentPage);
+  const ps = getPageScale(currentPage);
+  const rot = getPageRotation(currentPage);
+  const hasTransform = !!getPageTransform(currentPage) || off.x !== 0 || off.y !== 0 || ps.old !== 100 || ps.new !== 100 || rot !== 0;
+
+  if (!align3Active && !hasTransform) {
+    el.textContent = 'Pick 3 matching point pairs to align PDFs.';
+    el.className = 'align3-status';
+    DOM.align3Clear.style.display = 'none';
+  } else if (!align3Active && hasTransform) {
+    el.textContent = 'Alignment applied — values shown in Scale/Translation/Rotation.';
+    el.className = 'align3-status done';
+    DOM.align3Clear.style.display = '';
+  } else if (align3Phase === 'old') {
+    const n = align3PointsOld.length;
+    el.textContent = `Click point ${n + 1}/3 on OLD (blue) PDF`;
+    el.className = 'align3-status active';
+  } else {
+    const n = align3PointsNew.length;
+    el.textContent = `Click point ${n + 1}/3 on NEW (red) PDF`;
+    el.className = 'align3-status active';
+  }
+
+  // Show picked points
+  let html = '';
+  const labels = ['A', 'B', 'C'];
+  for (let i = 0; i < 3; i++) {
+    const pO = align3PointsOld[i];
+    const pN = align3PointsNew[i];
+    if (pO || pN) {
+      html += '<div class="align3-point-row">';
+      html += `<strong style="width:10px;">${labels[i]}</strong>`;
+      if (pO) html += `<span class="align3-point-dot old"></span><span>Old: ${Math.round(pO.x)}, ${Math.round(pO.y)}</span>`;
+      if (pN) html += `<span class="align3-point-dot new"></span><span>New: ${Math.round(pN.x)}, ${Math.round(pN.y)}</span>`;
+      html += '</div>';
+    }
+  }
+  pts.innerHTML = html;
+}
+
+// Convert a click on the overlay canvas to PDF pixel coordinates
+function align3ClickToCanvas(e) {
+  const overlay = DOM.align3Overlay;
+  const output = DOM.canvasOutput;
+  const rect = overlay.getBoundingClientRect();
+  // The overlay covers the canvas-container which may be zoomed
+  const clickX = e.clientX - rect.left;
+  const clickY = e.clientY - rect.top;
+  // Convert from display coords to actual canvas pixel coords
+  const scaleX = output.width / rect.width;
+  const scaleY = output.height / rect.height;
+  return { x: clickX * scaleX, y: clickY * scaleY };
+}
+
+// Draw markers on the overlay canvas to show picked points
+function drawAlign3Markers() {
+  const overlay = DOM.align3Overlay;
+  const output = DOM.canvasOutput;
+  if (!output.width || !output.height) return;
+  overlay.width = output.width;
+  overlay.height = output.height;
+  const ctx = overlay.getContext('2d');
+  ctx.clearRect(0, 0, overlay.width, overlay.height);
+
+  const labels = ['A', 'B', 'C'];
+  const drawPoint = (pt, color, label, offsetDir) => {
+    const r = 8;
+    // Outer ring
+    ctx.strokeStyle = '#000';
+    ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.arc(pt.x, pt.y, r + 1, 0, Math.PI * 2); ctx.stroke();
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(pt.x, pt.y, r, 0, Math.PI * 2); ctx.stroke();
+    // Center dot
+    ctx.fillStyle = color;
+    ctx.beginPath(); ctx.arc(pt.x, pt.y, 3, 0, Math.PI * 2); ctx.fill();
+    // Label
+    ctx.font = 'bold 14px DM Sans, sans-serif';
+    ctx.fillStyle = '#000';
+    ctx.fillText(label, pt.x + 12 + 1, pt.y - 10 + 1);
+    ctx.fillStyle = color;
+    ctx.fillText(label, pt.x + 12, pt.y - 10);
+  };
+
+  align3PointsOld.forEach((pt, i) => drawPoint(pt, '#58a6ff', labels[i] + '₁'));
+  align3PointsNew.forEach((pt, i) => drawPoint(pt, '#ff6b6b', labels[i] + '₂'));
+}
+
+// Handle click on the alignment overlay
+DOM.align3Overlay.addEventListener('click', function(e) {
+  if (!align3Active) return;
+  e.preventDefault();
+  e.stopPropagation();
+
+  const pt = align3ClickToCanvas(e);
+
+  if (align3Phase === 'old') {
+    align3PointsOld.push(pt);
+    drawAlign3Markers();
+    if (align3PointsOld.length === 3) {
+      align3Phase = 'new';
+    }
+  } else {
+    align3PointsNew.push(pt);
+    drawAlign3Markers();
+    if (align3PointsNew.length === 3) {
+      // All 6 points collected — compute and apply transform
+      computeAndApplyAlign3();
+    }
+  }
+  updateAlign3UI();
+});
+
+// Solve affine transform from 3 point pairs: src[i] → dst[i]
+// Returns {a, b, c, d, e, f} such that:
+//   dst.x = a * src.x + b * src.y + e
+//   dst.y = c * src.x + d * src.y + f
+function solveAffine(src, dst) {
+  // Set up system: for each point pair (sx,sy) → (dx,dy):
+  //   a*sx + b*sy + e = dx
+  //   c*sx + d*sy + f = dy
+  // 6 unknowns, 6 equations
+  const s = src, d = dst;
+  // For x-coords: [s0x s0y 1] [a]   [d0x]
+  //               [s1x s1y 1] [b] = [d1x]
+  //               [s2x s2y 1] [e]   [d2x]
+  // Solve via Cramer's rule or direct inverse of 3x3 matrix
+  const det = s[0].x * (s[1].y - s[2].y) - s[0].y * (s[1].x - s[2].x) + (s[1].x * s[2].y - s[2].x * s[1].y);
+  if (Math.abs(det) < 1e-10) return null; // degenerate (collinear points)
+
+  const invDet = 1 / det;
+  // Inverse of [[s0x,s0y,1],[s1x,s1y,1],[s2x,s2y,1]]
+  const m00 = (s[1].y - s[2].y) * invDet;
+  const m01 = (s[2].y - s[0].y) * invDet;
+  const m02 = (s[0].y - s[1].y) * invDet;
+  const m10 = (s[2].x - s[1].x) * invDet;
+  const m11 = (s[0].x - s[2].x) * invDet;
+  const m12 = (s[1].x - s[0].x) * invDet;
+  const m20 = (s[1].x * s[2].y - s[2].x * s[1].y) * invDet;
+  const m21 = (s[2].x * s[0].y - s[0].x * s[2].y) * invDet;
+  const m22 = (s[0].x * s[1].y - s[1].x * s[0].y) * invDet;
+
+  // Multiply inv(S) * dx and inv(S) * dy
+  const a = m00 * d[0].x + m01 * d[1].x + m02 * d[2].x;
+  const b = m10 * d[0].x + m11 * d[1].x + m12 * d[2].x;
+  const e = m20 * d[0].x + m21 * d[1].x + m22 * d[2].x;
+  const c = m00 * d[0].y + m01 * d[1].y + m02 * d[2].y;
+  const dd = m10 * d[0].y + m11 * d[1].y + m12 * d[2].y;
+  const f = m20 * d[0].y + m21 * d[1].y + m22 * d[2].y;
+
+  return { a, b, c, d: dd, e, f };
+}
+
+// Snap small rotations (<1°) to zero in an affine transform.
+// Decomposes into rotation + scale + translation, snaps rotation, recomposes.
+function snapAffineRotation(t) {
+  // Decompose: rotation angle from atan2(c, a) (where a=cos*sx, c=sin*sx)
+  const angle = Math.atan2(t.c, t.a); // radians
+  const angleDeg = angle * 180 / Math.PI;
+  if (Math.abs(angleDeg) >= 1) return t; // rotation is significant, keep as-is
+
+  // Rotation is < 1° — remove it, keep only scale + translation
+  // Extract scale: sx = sqrt(a² + c²), sy = sqrt(b² + d²)
+  const sx = Math.sqrt(t.a * t.a + t.c * t.c);
+  const sy = Math.sqrt(t.b * t.b + t.d * t.d);
+  // Determine sign of sy (check if the transform flips)
+  const det = t.a * t.d - t.b * t.c;
+  const sySign = det < 0 ? -1 : 1;
+  // Rebuild without rotation
+  return { a: sx, b: 0, c: 0, d: sySign * sy, e: t.e, f: t.f };
+}
+
+function computeAndApplyAlign3() {
+  // We want: where should we place the NEW image so that its points match the OLD image's points?
+  // The old image stays fixed. We need a transform T such that T(newPt[i]) = oldPt[i]
+  // i.e., new PDF pixels → position on the composite canvas matching old PDF coordinates
+  let transform = solveAffine(align3PointsNew, align3PointsOld);
+  if (!transform) {
+    alert('Points are collinear — pick non-collinear points.');
+    cancelAlign3();
+    return;
+  }
+
+  // Snap tiny rotations (<1°) caused by imprecise clicking
+  transform = snapAffineRotation(transform);
+
+  // Decompose affine into rotation, scale, and translation
+  const rotRad = Math.atan2(transform.c, transform.a);
+  const rotDeg = Math.round(rotRad * 180 / Math.PI * 100) / 100;
+  const sx = Math.sqrt(transform.a * transform.a + transform.c * transform.c);
+  const sy = Math.sqrt(transform.b * transform.b + transform.d * transform.d);
+  const uniformScale = (sx + sy) / 2;
+
+  // Compute new per-layer scale
+  const ps = getPageScale(currentPage);
+  const sN = ps.new / 100;
+  const sN_new = sN * uniformScale;
+  const scaleNewPercent = Math.round(ps.new * uniformScale * 10) / 10;
+
+  // Compute offset from affine translation, accounting for rotation around image center
+  // Standard composite path: pixel (px,py) → rotate around center → place at offset
+  //   canvas = R * (sN_new * pixel - center) + (offset + center)
+  // Affine: canvas = [[a,b],[c,d]] * sN * pixel + (e, f)
+  // Matching constants: offset = (e,f) + R*center - center  where center = (wN_new/2, hN_new/2)
+  const imgW = rawNew.width, imgH = rawNew.height;
+  const wN_new = imgW * sN_new, hN_new = imgH * sN_new;
+  const cosR = Math.cos(rotRad), sinR = Math.sin(rotRad);
+  const cx = wN_new / 2, cy = hN_new / 2;
+  const ox = Math.round((transform.e + cosR * cx - sinR * cy - cx) * 10) / 10;
+  const oy = Math.round((transform.f + sinR * cx + cosR * cy - cy) * 10) / 10;
+
+  // Apply decomposed values to offset/scale/rotation (not raw affine)
+  const scope = DOM.transformScope.value;
+  if (scope === 'all') {
+    for (let p = 1; p <= maxPages; p++) {
+      setPageOffset(p, ox, oy);
+      setPageRotation(p, rotDeg);
+      setPageScale(p, ps.old, scaleNewPercent);
+    }
+  } else {
+    setPageOffset(currentPage, ox, oy);
+    setPageRotation(currentPage, rotDeg);
+    setPageScale(currentPage, ps.old, scaleNewPercent);
+  }
+
+  // End picking mode
+  align3Active = false;
+  DOM.align3Start.textContent = 'Start Alignment';
+  DOM.align3Start.classList.remove('active');
+  DOM.align3Overlay.classList.remove('picking');
+  drawAlign3Markers();
+  updateAlign3UI();
+  loadTransformUI();
+
+  // Re-render with decomposed transform values
+  if (rawOld || rawNew) recolorAndComposite();
+  scheduleThumbRefresh();
+}
+
+// ═══════════════════════════════════════
 //  KEYBOARD
 // ═══════════════════════════════════════
 window.addEventListener('keydown',e=>{
   if(isInputFocused()) return;
+  // Cancel 3-point alignment on Escape
+  if(e.key==='Escape'&&align3Active){cancelAlign3();return;}
   // Drawing tool shortcuts
   if(e.key==='v'||e.key==='V'){setDrawTool('pan');return;}
   if(e.key==='p'&&!e.ctrlKey&&!e.metaKey){setDrawTool('pen');return;}
