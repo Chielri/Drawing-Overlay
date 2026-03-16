@@ -171,6 +171,32 @@
   .thumb-toggle:hover { color: var(--text); background: var(--surface2); }
   .thumb-toggle.shifted { left: 420px; }
 
+  /* Drawing toolbar */
+  .draw-toolbar {
+    position: fixed; bottom: 14px; left: 50%; transform: translateX(-50%);
+    display: none; gap: 6px; align-items: center;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+    padding: 6px 12px; z-index: 25; box-shadow: 0 4px 20px rgba(0,0,0,0.4);
+  }
+  .draw-toolbar.show { display: inline-flex; }
+  .draw-toolbar .draw-sep { width: 1px; height: 22px; background: var(--border); }
+  .draw-toolbar button {
+    padding: 5px 10px; background: transparent; border: 1px solid transparent;
+    color: var(--text); font-family: 'DM Sans', sans-serif; font-size: 12px;
+    cursor: pointer; border-radius: 6px; transition: all 0.15s; white-space: nowrap;
+  }
+  .draw-toolbar button:hover { background: var(--surface2); border-color: var(--border); }
+  .draw-toolbar button.active { border-color: var(--blue); background: var(--blue-dim); color: var(--blue); }
+  .draw-toolbar input[type="color"] { width: 26px; height: 22px; border: 1px solid var(--border); border-radius: 4px; cursor: pointer; background: transparent; padding: 1px; }
+  .draw-toolbar input[type="range"] { width: 60px; height: 4px; }
+  .draw-toolbar .draw-width-label {
+    font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--text-dim); min-width: 22px; text-align: center;
+  }
+  .draw-canvas-overlay {
+    position: absolute; top: 0; left: 0; pointer-events: none; z-index: 5;
+  }
+  .draw-canvas-overlay.active { pointer-events: auto; cursor: crosshair; }
+
   /* Dual-pane side-by-side */
   .sbs-wrapper { display: none; flex: 1; flex-direction: row; height: 100%; overflow: hidden; }
   .sbs-wrapper.show { display: flex; }
@@ -823,8 +849,9 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         <h2>Upload two PDF revisions</h2>
         <p>Upload old and new versions. Lines from each appear in different colors. Overlapping areas blend together.</p>
       </div>
-      <div class="canvas-container" id="canvas-container" style="display:none;">
+      <div class="canvas-container" id="canvas-container" style="display:none;position:relative;">
         <canvas id="canvas-output"></canvas>
+        <canvas class="draw-canvas-overlay" id="draw-canvas"></canvas>
       </div>
     </div>
     <!-- Dual-pane side-by-side (hidden by default, shown in sidebyside mode) -->
@@ -850,6 +877,17 @@ https://github.com/nodeca/pako/blob/main/LICENSE
   <span class="zoom-label" id="zoom-label">100%</span>
   <button class="zoom-btn" onclick="doZoom(0.15)">+</button>
   <button class="zoom-btn" onclick="zoomFit()">Fit</button>
+</div>
+<div class="draw-toolbar" id="draw-toolbar">
+  <button id="draw-toggle" onclick="toggleDrawMode()">Draw</button>
+  <div class="draw-sep"></div>
+  <input type="color" id="draw-color" value="#ff1744" title="Stroke color" />
+  <input type="range" id="draw-width" min="1" max="20" value="3" title="Stroke width" oninput="$('draw-width-label').textContent=this.value+'px'" />
+  <span class="draw-width-label" id="draw-width-label">3px</span>
+  <div class="draw-sep"></div>
+  <button onclick="undoDraw()">Undo</button>
+  <button onclick="clearDrawPage()">Clear</button>
+  <button onclick="clearDrawAll()">Clear All</button>
 </div>
 
 <script>
@@ -897,6 +935,9 @@ const DOM = {
   sbsScrollOld: $('sbs-scroll-old'), sbsScrollNew: $('sbs-scroll-new'),
   sbsCanvasOld: $('sbs-canvas-old'), sbsCanvasNew: $('sbs-canvas-new'),
   sbsLabelOld: $('sbs-label-old'), sbsLabelNew: $('sbs-label-new'),
+  // Drawing
+  drawToolbar: $('draw-toolbar'), drawToggle: $('draw-toggle'),
+  drawCanvas: $('draw-canvas'), drawColor: $('draw-color'), drawWidth: $('draw-width'),
 };
 
 // ═══════════════════════════════════════
@@ -1386,7 +1427,7 @@ async function renderPage(num) {
   touchLRU(num);
   invalidateRecolor();
   _doRecolorAndComposite();
-  if (!hasRenderedOnce) { hasRenderedOnce = true; requestAnimationFrame(() => zoomFit()); }
+  if (!hasRenderedOnce) { hasRenderedOnce = true; requestAnimationFrame(() => zoomFit()); _updateDrawToolbarVisibility(); }
 }
 
 async function renderPdfPage(pdf, num) {
@@ -1534,6 +1575,7 @@ function composite(w, h, imgO, imgN) {
   }
   applySbsZoom();
   applyZoom();
+  redrawDrawCanvas();
 }
 
 // ═══════════════════════════════════════
@@ -1543,6 +1585,7 @@ function applyZoom() {
   const dw = DOM.canvasOutput.width*currentZoom, dh = DOM.canvasOutput.height*currentZoom;
   DOM.canvasContainer.style.width = dw+'px'; DOM.canvasContainer.style.height = dh+'px';
   DOM.canvasOutput.style.width = '100%'; DOM.canvasOutput.style.height = '100%';
+  DOM.drawCanvas.style.width = '100%'; DOM.drawCanvas.style.height = '100%';
   DOM.canvasPad.style.minWidth = (dw+48)+'px'; DOM.canvasPad.style.minHeight = (dh+48)+'px';
   DOM.zoomLabel.textContent = Math.round(currentZoom*getRenderScale()*100)+'%';
 }
@@ -1864,13 +1907,28 @@ function _ensureJsPDF() {
   return false;
 }
 
+// Compose output + drawing strokes into a single export canvas
+function _getExportCanvas(page) {
+  const out = DOM.canvasOutput;
+  const strokes = _getDrawStrokes(page || currentPage);
+  if (strokes.length === 0) return out;
+  const c = document.createElement('canvas');
+  c.width = out.width; c.height = out.height;
+  const ctx = c.getContext('2d');
+  ctx.drawImage(out, 0, 0);
+  for (const s of strokes) _renderBezierPath(ctx, s.bezierCmds, s.color, s.width);
+  return c;
+}
+
 function exportPNG() {
   if(!DOM.canvasOutput.width) return alert('Nothing to export.');
-  DOM.canvasOutput.toBlob(b=>{const a=document.createElement('a');a.href=URL.createObjectURL(b);a.download=`overlay-page-${currentPage}.png`;a.click();URL.revokeObjectURL(a.href);},'image/png');
+  const c = _getExportCanvas();
+  c.toBlob(b=>{const a=document.createElement('a');a.href=URL.createObjectURL(b);a.download=`overlay-page-${currentPage}.png`;a.click();URL.revokeObjectURL(a.href);},'image/png');
 }
 async function exportPDF() {
-  const c=DOM.canvasOutput; if(!c.width) return alert('Nothing to export.');
+  if(!DOM.canvasOutput.width) return alert('Nothing to export.');
   if (!await _ensureJsPDF()) return;
+  const c=_getExportCanvas();
   const JsPDF = _getJsPDF(), o=c.width>=c.height?'landscape':'portrait';
   const pdf=new JsPDF({orientation:o,unit:'px',format:[c.width,c.height]});
   pdf.addImage(c.toDataURL('image/jpeg',0.92),'JPEG',0,0,c.width,c.height);
@@ -1886,7 +1944,7 @@ async function exportAllPDF() {
     for(let p=1;p<=maxPages;p++) {
       btn.textContent=`${p}/${maxPages}…`; await sleep(30);
       currentPage=p; loadOffsetUI(); await renderPage(p);
-      const c=DOM.canvasOutput, o=c.width>=c.height?'landscape':'portrait';
+      const c=_getExportCanvas(p), o=c.width>=c.height?'landscape':'portrait';
       if(p===1) pdf=new JsPDF({orientation:o,unit:'px',format:[c.width,c.height]});
       else pdf.addPage([c.width,c.height],o);
       pdf.addImage(c.toDataURL('image/jpeg',0.92),'JPEG',0,0,c.width,c.height);
@@ -1911,7 +1969,8 @@ async function exportAllPNG() {
       await sleep(30);
       currentPage = p; loadOffsetUI();
       await renderPage(p);
-      const blob = await new Promise(r => DOM.canvasOutput.toBlob(r, 'image/png'));
+      const ec = _getExportCanvas(p);
+      const blob = await new Promise(r => ec.toBlob(r, 'image/png'));
       zip.file(`overlay-page-${String(p).padStart(3, '0')}.png`, blob);
     }
     btn.textContent = 'Zipping…';
@@ -1933,7 +1992,7 @@ async function exportAllPNG() {
 (function(){
   const area=DOM.canvasArea; let drag=false,sx,sy,sl,st;
   area.addEventListener('mousedown',e=>{
-    if(e.target.closest('.zoom-bar')||e.target.closest('.sbs-wrapper'))return;
+    if(drawModeActive||e.target.closest('.zoom-bar')||e.target.closest('.sbs-wrapper')||e.target.closest('.draw-canvas-overlay'))return;
     drag=true;area.classList.add('dragging');sx=e.clientX;sy=e.clientY;sl=area.scrollLeft;st=area.scrollTop;e.preventDefault();
   });
   window.addEventListener('mousemove',e=>{if(!drag)return;area.scrollLeft=sl-(e.clientX-sx);area.scrollTop=st-(e.clientY-sy);});
@@ -2144,10 +2203,231 @@ function changeThumbPPI() {
 }
 
 // ═══════════════════════════════════════
+//  DRAWING — Bezier-compressed vector strokes
+// ═══════════════════════════════════════
+
+// Per-page stroke storage: { pageNum: [ { color, width, bezierPaths: [[{type,pts},...], ...] }, ... ] }
+let drawStrokes = {};
+let drawModeActive = false;
+let _drawCurrent = null;  // { points: [{x,y},...] } while drawing
+const _drawCtx = DOM.drawCanvas.getContext('2d');
+
+function toggleDrawMode() {
+  drawModeActive = !drawModeActive;
+  DOM.drawToggle.classList.toggle('active', drawModeActive);
+  DOM.drawCanvas.classList.toggle('active', drawModeActive);
+  if (drawModeActive) DOM.canvasArea.style.cursor = 'default';
+  else DOM.canvasArea.style.cursor = 'grab';
+}
+
+function _getDrawStrokes(page) { return drawStrokes[String(page)] || []; }
+function _setDrawStrokes(page, arr) { drawStrokes[String(page)] = arr; }
+
+// --- Ramer-Douglas-Peucker simplification ---
+function _rdpSimplify(pts, epsilon) {
+  if (pts.length <= 2) return pts;
+  let maxDist = 0, maxIdx = 0;
+  const first = pts[0], last = pts[pts.length - 1];
+  for (let i = 1; i < pts.length - 1; i++) {
+    const d = _pointLineDistance(pts[i], first, last);
+    if (d > maxDist) { maxDist = d; maxIdx = i; }
+  }
+  if (maxDist > epsilon) {
+    const left = _rdpSimplify(pts.slice(0, maxIdx + 1), epsilon);
+    const right = _rdpSimplify(pts.slice(maxIdx), epsilon);
+    return left.slice(0, -1).concat(right);
+  }
+  return [first, last];
+}
+
+function _pointLineDistance(p, a, b) {
+  const dx = b.x - a.x, dy = b.y - a.y;
+  const lenSq = dx * dx + dy * dy;
+  if (lenSq === 0) return Math.hypot(p.x - a.x, p.y - a.y);
+  let t = ((p.x - a.x) * dx + (p.y - a.y) * dy) / lenSq;
+  t = Math.max(0, Math.min(1, t));
+  return Math.hypot(p.x - (a.x + t * dx), p.y - (a.y + t * dy));
+}
+
+// --- Fit cubic Bezier segments to simplified points ---
+// Converts a polyline into cubic Bezier commands: [{type:'M',x,y}, {type:'C',cp1x,cp1y,cp2x,cp2y,x,y}, ...]
+function _fitBezierPath(pts) {
+  if (pts.length === 0) return [];
+  if (pts.length === 1) return [{ type: 'M', x: pts[0].x, y: pts[0].y }];
+  if (pts.length === 2) {
+    return [
+      { type: 'M', x: pts[0].x, y: pts[0].y },
+      { type: 'L', x: pts[1].x, y: pts[1].y }
+    ];
+  }
+  // Catmull-Rom → cubic Bezier conversion for smooth curves through all points
+  const cmds = [{ type: 'M', x: pts[0].x, y: pts[0].y }];
+  for (let i = 0; i < pts.length - 1; i++) {
+    const p0 = pts[Math.max(0, i - 1)];
+    const p1 = pts[i];
+    const p2 = pts[i + 1];
+    const p3 = pts[Math.min(pts.length - 1, i + 2)];
+    // Catmull-Rom to cubic Bezier control points (tension = 0, alpha = 0.5)
+    const cp1x = p1.x + (p2.x - p0.x) / 6;
+    const cp1y = p1.y + (p2.y - p0.y) / 6;
+    const cp2x = p2.x - (p3.x - p1.x) / 6;
+    const cp2y = p2.y - (p3.y - p1.y) / 6;
+    cmds.push({ type: 'C', cp1x, cp1y, cp2x, cp2y, x: p2.x, y: p2.y });
+  }
+  return cmds;
+}
+
+// Compress raw points → simplified → Bezier commands
+function _compressStroke(rawPoints) {
+  // Epsilon based on canvas resolution — ~1px tolerance at current zoom
+  const epsilon = 1.5;
+  const simplified = _rdpSimplify(rawPoints, epsilon);
+  return _fitBezierPath(simplified);
+}
+
+// Render a single stroke's Bezier path to a context
+function _renderBezierPath(ctx, cmds, color, width) {
+  if (cmds.length === 0) return;
+  ctx.strokeStyle = color;
+  ctx.lineWidth = width;
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  ctx.beginPath();
+  for (const cmd of cmds) {
+    if (cmd.type === 'M') ctx.moveTo(cmd.x, cmd.y);
+    else if (cmd.type === 'L') ctx.lineTo(cmd.x, cmd.y);
+    else if (cmd.type === 'C') ctx.bezierCurveTo(cmd.cp1x, cmd.cp1y, cmd.cp2x, cmd.cp2y, cmd.x, cmd.y);
+  }
+  ctx.stroke();
+}
+
+// Redraw all strokes for the current page on the draw overlay canvas
+function redrawDrawCanvas() {
+  const out = DOM.canvasOutput;
+  const dc = DOM.drawCanvas;
+  // Match overlay canvas size to output canvas (pixel-exact)
+  dc.width = out.width;
+  dc.height = out.height;
+  // Match the CSS transform (zoom) from canvasOutput
+  dc.style.width = out.style.width;
+  dc.style.height = out.style.height;
+  const ctx = _drawCtx;
+  ctx.clearRect(0, 0, dc.width, dc.height);
+  const strokes = _getDrawStrokes(currentPage);
+  for (const s of strokes) {
+    _renderBezierPath(ctx, s.bezierCmds, s.color, s.width);
+  }
+}
+
+// Sync draw canvas sizing whenever zoom/composite changes
+function syncDrawCanvasSize() {
+  const out = DOM.canvasOutput;
+  const dc = DOM.drawCanvas;
+  dc.style.width = out.style.width;
+  dc.style.height = out.style.height;
+  // Only resize pixel buffer if needed
+  if (dc.width !== out.width || dc.height !== out.height) {
+    redrawDrawCanvas();
+  }
+}
+
+// --- Pointer event handlers for drawing ---
+DOM.drawCanvas.addEventListener('pointerdown', e => {
+  if (!drawModeActive) return;
+  e.preventDefault();
+  DOM.drawCanvas.setPointerCapture(e.pointerId);
+  const rect = DOM.drawCanvas.getBoundingClientRect();
+  const scaleX = DOM.drawCanvas.width / rect.width;
+  const scaleY = DOM.drawCanvas.height / rect.height;
+  const x = (e.clientX - rect.left) * scaleX;
+  const y = (e.clientY - rect.top) * scaleY;
+  _drawCurrent = {
+    points: [{ x, y }],
+    color: DOM.drawColor.value,
+    width: parseInt(DOM.drawWidth.value)
+  };
+  // Start live preview path
+  _drawCtx.strokeStyle = _drawCurrent.color;
+  _drawCtx.lineWidth = _drawCurrent.width;
+  _drawCtx.lineCap = 'round';
+  _drawCtx.lineJoin = 'round';
+  _drawCtx.beginPath();
+  _drawCtx.moveTo(x, y);
+});
+
+DOM.drawCanvas.addEventListener('pointermove', e => {
+  if (!_drawCurrent) return;
+  e.preventDefault();
+  const rect = DOM.drawCanvas.getBoundingClientRect();
+  const scaleX = DOM.drawCanvas.width / rect.width;
+  const scaleY = DOM.drawCanvas.height / rect.height;
+  const x = (e.clientX - rect.left) * scaleX;
+  const y = (e.clientY - rect.top) * scaleY;
+  _drawCurrent.points.push({ x, y });
+  // Live preview: draw raw line segment for immediacy
+  _drawCtx.lineTo(x, y);
+  _drawCtx.stroke();
+  // Continue the path from this point
+  _drawCtx.beginPath();
+  _drawCtx.moveTo(x, y);
+});
+
+DOM.drawCanvas.addEventListener('pointerup', e => {
+  if (!_drawCurrent) return;
+  e.preventDefault();
+  // Compress raw points to Bezier
+  const bezierCmds = _compressStroke(_drawCurrent.points);
+  const stroke = {
+    color: _drawCurrent.color,
+    width: _drawCurrent.width,
+    bezierCmds
+  };
+  const strokes = _getDrawStrokes(currentPage);
+  strokes.push(stroke);
+  _setDrawStrokes(currentPage, strokes);
+  _drawCurrent = null;
+  // Redraw cleanly from Bezier data (replaces raw preview with smooth curves)
+  redrawDrawCanvas();
+});
+
+DOM.drawCanvas.addEventListener('pointercancel', () => {
+  _drawCurrent = null;
+  redrawDrawCanvas();
+});
+
+function undoDraw() {
+  const strokes = _getDrawStrokes(currentPage);
+  if (strokes.length === 0) return;
+  strokes.pop();
+  _setDrawStrokes(currentPage, strokes);
+  redrawDrawCanvas();
+}
+
+function clearDrawPage() {
+  _setDrawStrokes(currentPage, []);
+  redrawDrawCanvas();
+}
+
+function clearDrawAll() {
+  drawStrokes = {};
+  redrawDrawCanvas();
+}
+
+// Show/hide draw toolbar when comparison is rendered
+function _updateDrawToolbarVisibility() {
+  DOM.drawToolbar.classList.toggle('show', hasRenderedOnce);
+}
+
+// ═══════════════════════════════════════
 //  KEYBOARD
 // ═══════════════════════════════════════
 window.addEventListener('keydown',e=>{
-  if(isInputFocused()||maxPages<=1) return;
+  // Ctrl+Z / Cmd+Z: undo drawing stroke
+  if ((e.ctrlKey || e.metaKey) && e.key === 'z' && drawModeActive) { e.preventDefault(); undoDraw(); return; }
+  if(isInputFocused()) return;
+  // 'D' toggles draw mode
+  if (e.key === 'd' || e.key === 'D') { if(hasRenderedOnce) toggleDrawMode(); return; }
+  if(maxPages<=1) return;
   if(e.key==='ArrowLeft'||e.key==='PageUp'){e.preventDefault();changePage(-1);}
   else if(e.key==='ArrowRight'||e.key==='PageDown'){e.preventDefault();changePage(1);}
   else if(e.key==='Home'){e.preventDefault();currentPage=1;loadOffsetUI();renderPage(1);updatePageNav();}
