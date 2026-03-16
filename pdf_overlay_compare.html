@@ -2014,9 +2014,11 @@ async function exportAllPNG() {
 (function(){
   const area=DOM.canvasArea; let drag=false,sx,sy,sl,st;
   area.addEventListener('mousedown',e=>{
-    if(drawTool!=='pan'||e.target.closest('.zoom-bar')||e.target.closest('.sbs-wrapper'))return;
+    if(e.target.closest('.zoom-bar')||e.target.closest('.sbs-wrapper'))return;
+    if(e.button!==1&&drawTool!=='pan')return; // left-click only in pan mode, middle-click always
     drag=true;area.classList.add('dragging');sx=e.clientX;sy=e.clientY;sl=area.scrollLeft;st=area.scrollTop;e.preventDefault();
   });
+  area.addEventListener('auxclick',e=>{if(e.button===1)e.preventDefault();}); // prevent middle-click autoscroll
   window.addEventListener('mousemove',e=>{if(!drag)return;area.scrollLeft=sl-(e.clientX-sx);area.scrollTop=st-(e.clientY-sy);});
   window.addEventListener('mouseup',()=>{if(!drag)return;drag=false;area.classList.remove('dragging');});
   area.addEventListener('wheel',e=>{
@@ -2049,11 +2051,12 @@ async function exportAllPNG() {
   function initPaneDrag(pane) {
     let drag=false, sx, sy, sl, st;
     pane.addEventListener('mousedown', e => {
-      if (drawTool !== 'pan') return;
+      if(e.button!==1&&drawTool!=='pan') return; // left-click only in pan mode, middle-click always
       drag=true; pane.classList.add('dragging');
       sx=e.clientX; sy=e.clientY; sl=pane.scrollLeft; st=pane.scrollTop;
       e.preventDefault();
     });
+    pane.addEventListener('auxclick', e=>{if(e.button===1)e.preventDefault();}); // prevent middle-click autoscroll
     window.addEventListener('mousemove', e => {
       if(!drag) return;
       pane.scrollLeft = sl-(e.clientX-sx);
