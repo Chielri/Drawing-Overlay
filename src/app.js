@@ -42,6 +42,7 @@ const DOM = {
   sbsScrollOld: $('sbs-scroll-old'), sbsScrollNew: $('sbs-scroll-new'),
   sbsCanvasOld: $('sbs-canvas-old'), sbsCanvasNew: $('sbs-canvas-new'),
   sbsLabelOld: $('sbs-label-old'), sbsLabelNew: $('sbs-label-new'),
+  sbsCrosshairOld: $('sbs-crosshair-old'), sbsCrosshairNew: $('sbs-crosshair-new'),
 };
 
 // ═══════════════════════════════════════
@@ -1149,6 +1150,22 @@ async function exportAllPNG() {
   }
   sO.addEventListener('wheel', sbsWheelZoom, {passive:false});
   sN.addEventListener('wheel', sbsWheelZoom, {passive:false});
+
+  // Synced crosshair: hovering one pane shows a cursor marker on the other
+  function positionCrosshair(sourcePane, targetCrosshair, e) {
+    const rect = sourcePane.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    targetCrosshair.style.left = x + 'px';
+    targetCrosshair.style.top = y + 'px';
+    targetCrosshair.classList.add('visible');
+  }
+  function hideCrosshair(ch) { ch.classList.remove('visible'); }
+
+  sO.addEventListener('mousemove', e => positionCrosshair(sO, DOM.sbsCrosshairNew, e));
+  sN.addEventListener('mousemove', e => positionCrosshair(sN, DOM.sbsCrosshairOld, e));
+  sO.addEventListener('mouseleave', () => hideCrosshair(DOM.sbsCrosshairNew));
+  sN.addEventListener('mouseleave', () => hideCrosshair(DOM.sbsCrosshairOld));
 })();
 
 // ═══════════════════════════════════════

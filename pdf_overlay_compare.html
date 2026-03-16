@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>PDF Overlay Comparison Tool</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect x='3' y='5' width='16' height='20' rx='2' fill='%2358a6ff' opacity='0.8'/><rect x='13' y='7' width='16' height='20' rx='2' fill='%23ff6b6b' opacity='0.8'/></svg>">
 <style>
   @import url('https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,500;0,9..40,700;1,9..40,300&family=JetBrains+Mono:wght@400;600&display=swap');
   * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -185,6 +186,17 @@
   .sbs-scroll.dragging { cursor: grabbing; user-select: none; }
   .sbs-canvas-wrap { padding: 24px; display: inline-flex; min-width: 100%; min-height: 100%; align-items: center; justify-content: center; }
   .sbs-canvas-wrap canvas { display: block; box-shadow: 0 4px 20px rgba(0,0,0,0.3); border-radius: 4px; background: #fff; }
+  .sbs-crosshair {
+    display: none; position: absolute; z-index: 15; pointer-events: none;
+    width: 20px; height: 20px; transform: translate(-50%, -50%);
+  }
+  .sbs-crosshair::before, .sbs-crosshair::after {
+    content: ''; position: absolute; background: rgba(255,255,255,0.85);
+    border-radius: 1px;
+  }
+  .sbs-crosshair::before { width: 2px; height: 100%; left: 50%; transform: translateX(-50%); }
+  .sbs-crosshair::after { height: 2px; width: 100%; top: 50%; transform: translateY(-50%); }
+  .sbs-crosshair.visible { display: block; }
   .sbs-divider { width: 3px; flex-shrink: 0; background: var(--border); }
 </style>
 
@@ -831,6 +843,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
     <div class="sbs-wrapper" id="sbs-wrapper" style="display:none;">
       <div class="sbs-pane" id="sbs-pane-old">
         <div class="sbs-label" id="sbs-label-old">OLD</div>
+        <div class="sbs-crosshair" id="sbs-crosshair-old"></div>
         <div class="sbs-scroll" id="sbs-scroll-old">
           <div class="sbs-canvas-wrap"><canvas id="sbs-canvas-old"></canvas></div>
         </div>
@@ -838,6 +851,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       <div class="sbs-divider"></div>
       <div class="sbs-pane" id="sbs-pane-new">
         <div class="sbs-label" id="sbs-label-new">NEW</div>
+        <div class="sbs-crosshair" id="sbs-crosshair-new"></div>
         <div class="sbs-scroll" id="sbs-scroll-new">
           <div class="sbs-canvas-wrap"><canvas id="sbs-canvas-new"></canvas></div>
         </div>
@@ -897,6 +911,7 @@ const DOM = {
   sbsScrollOld: $('sbs-scroll-old'), sbsScrollNew: $('sbs-scroll-new'),
   sbsCanvasOld: $('sbs-canvas-old'), sbsCanvasNew: $('sbs-canvas-new'),
   sbsLabelOld: $('sbs-label-old'), sbsLabelNew: $('sbs-label-new'),
+  sbsCrosshairOld: $('sbs-crosshair-old'), sbsCrosshairNew: $('sbs-crosshair-new'),
 };
 
 // ═══════════════════════════════════════
@@ -2004,6 +2019,22 @@ async function exportAllPNG() {
   }
   sO.addEventListener('wheel', sbsWheelZoom, {passive:false});
   sN.addEventListener('wheel', sbsWheelZoom, {passive:false});
+
+  // Synced crosshair: hovering one pane shows a cursor marker on the other
+  function positionCrosshair(sourcePane, targetCrosshair, e) {
+    const rect = sourcePane.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    targetCrosshair.style.left = x + 'px';
+    targetCrosshair.style.top = y + 'px';
+    targetCrosshair.classList.add('visible');
+  }
+  function hideCrosshair(ch) { ch.classList.remove('visible'); }
+
+  sO.addEventListener('mousemove', e => positionCrosshair(sO, DOM.sbsCrosshairNew, e));
+  sN.addEventListener('mousemove', e => positionCrosshair(sN, DOM.sbsCrosshairOld, e));
+  sO.addEventListener('mouseleave', () => hideCrosshair(DOM.sbsCrosshairNew));
+  sN.addEventListener('mouseleave', () => hideCrosshair(DOM.sbsCrosshairOld));
 })();
 
 // ═══════════════════════════════════════
