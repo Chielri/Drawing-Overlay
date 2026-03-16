@@ -716,14 +716,14 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       <div class="preset-grid" id="preset-grid"></div>
     </div>
     <div class="control-group">
-      <div class="section-title">Render Quality (PPI)</div>
+      <div class="section-title">Thumbnail PPI</div>
       <select class="ppi-select" id="ppi-select" onchange="changePPI()">
         <option value="72">72 PPI — Fast / Draft</option>
         <option value="150" selected>150 PPI — Standard</option>
         <option value="200">200 PPI — High</option>
         <option value="300">300 PPI — Print Quality</option>
       </select>
-      <div class="ppi-hint">Higher PPI = sharper but slower to render</div>
+      <div class="ppi-hint">PPI for thumbnail panel only. Main view uses vector (Bezier) rendering — always sharp.</div>
     </div>
     <div class="control-group">
       <div class="section-title">Opacity</div>
@@ -787,9 +787,9 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         <div class="cache-text" id="cache-status">No pages cached</div>
         <div class="mem-est" id="mem-est"></div>
         <div style="margin-top:6px;">
-          <div class="control-row"><span class="control-label" style="font-size:11px;">Memory Limit</span><span class="control-value" id="mem-limit-val">4096 MB</span></div>
-          <input type="range" id="mem-limit" min="256" max="8192" step="256" value="4096" oninput="changeMemLimit()" style="width:100%;" />
-          <div class="offset-hint">Controls how much RAM is used for cached page renders. Higher = faster page switching but more memory. Lower if your browser slows down.</div>
+          <div class="control-row"><span class="control-label" style="font-size:11px;">Render Mode</span><span class="control-value" id="mem-limit-val">Vector</span></div>
+          <input type="range" id="mem-limit" min="256" max="8192" step="256" value="4096" oninput="changeMemLimit()" style="width:100%;display:none;" />
+          <div class="offset-hint">Vector (Bezier) rendering — resolution-independent, low memory. Paths cached per page.</div>
         </div>
         <div class="cache-controls">
           <div class="cache-range-row"><span class="offset-range-label">From</span><input type="number" class="cache-range-input" id="cache-from" value="1" min="1" /><span class="offset-range-label">to</span><input type="number" class="cache-range-input" id="cache-to" value="1" min="1" /></div>
@@ -944,27 +944,22 @@ const DOM = {
 //  STATE
 // ═══════════════════════════════════════
 let pdfOld = null, pdfNew = null;
-let rawOld = null, rawNew = null;
-let recoloredOld = null, recoloredNew = null;
-let lastColorOld = '', lastColorNew = '';
 let currentPage = 1, maxPages = 1, currentZoom = 1;
 let mode = 'overlay', visOld = true, visNew = true, processing = false;
 let pdfBufOld = null, pdfBufNew = null;
-let cacheOld = {}, cacheNew = {};
-let cachePPI = 0;
 let cacheAbort = false;
 let pageOffsets = {};
 let pageScales = {};
 let hasRenderedOnce = false;
 
-// LRU cache management — uses a Set for O(1) has/delete + Array for order
-let lruOrder = [];
-let lruSet = new Set();
-let cacheMemLimitMB = 512;
+// Vector path cache: { pageNum: { paths, pageW, pageH } }
+let vecCacheOld = {};
+let vecCacheNew = {};
+let cacheMemLimitMB = 4096; // kept for UI/preset compat (not used for vector mode)
+// Current page vector data (for quick re-composite)
+let vecOld = null, vecNew = null;
 
-let _trackedCacheBytes = 0;
-
-// Thumbnail state
+// Thumbnail state (still uses bitmap PPI rendering)
 let thumbPPI = 18;
 let thumbDataUrls = {};
 let thumbGeneration = 0;
@@ -975,88 +970,24 @@ let thumbRendering = false;
 let _compositeScheduled = false;
 let _sbsSyncLock = false; // prevents scroll-sync infinite loop
 
-const _tmpCanvasA = document.createElement('canvas');
-const _tmpCanvasB = document.createElement('canvas');
-const _tmpCtxA = _tmpCanvasA.getContext('2d');
-const _tmpCtxB = _tmpCanvasB.getContext('2d');
+// Base display size: how many CSS pixels per PDF point (controls "resolution")
+// At zoom=1, a 612×792pt page → 612×792 canvas pixels (1× screen).
+// With zoom or devicePixelRatio, the canvas scales up and paths re-render sharp.
+const PDF_BASE_SCALE = 1.5; // 1.5 = 108 "virtual PPI" — good balance of detail vs performance
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 function isInputFocused() { const t = document.activeElement?.tagName; return t === 'INPUT' || t === 'SELECT' || t === 'TEXTAREA'; }
 function debounce(fn, ms) { let t; return function(...a) { clearTimeout(t); t = setTimeout(() => fn.apply(this, a), ms); }; }
 
 // ═══════════════════════════════════════
-//  CACHE MEMORY LIMIT (incremental tracking)
+//  VECTOR CACHE (lightweight — no memory limit needed)
 // ═══════════════════════════════════════
 function changeMemLimit() {
-  const v = Math.max(256, parseInt(DOM.memLimit.value) || 4096);
-  cacheMemLimitMB = v;
-  DOM.memLimitVal.textContent = v >= 1024 ? (v/1024).toFixed(1).replace(/\.0$/,'') + ' GB' : v + ' MB';
-  let safety = lruOrder.length + 2;
-  while (_trackedCacheBytes > cacheMemLimitMB * 1048576 && lruOrder.length > 1 && safety-- > 0) {
-    const oldest = lruOrder[0];
-    if (oldest === String(currentPage)) { lruOrder.push(lruOrder.shift()); continue; }
-    evictPage(oldest);
-  }
+  // Memory limit is much less relevant with vector paths, but keep UI functional
+  DOM.memLimitVal.textContent = 'Vector mode';
   updateCacheUI();
 }
-
-// FIX: O(1) — just return tracked value
-function getCacheBytes() { return _trackedCacheBytes; }
-function getCacheMB() { return _trackedCacheBytes / 1048576; }
-
-// Recalculate from scratch (called only on bulk operations like clearCache)
-function _recomputeCacheBytes() {
-  let bytes = 0;
-  for (const k in cacheOld) if (cacheOld[k]) bytes += cacheOld[k].data.byteLength;
-  for (const k in cacheNew) if (cacheNew[k]) bytes += cacheNew[k].data.byteLength;
-  _trackedCacheBytes = bytes;
-}
-
-function touchLRU(page) {
-  const p = String(page);
-  if (lruSet.has(p)) {
-    const idx = lruOrder.indexOf(p);
-    if (idx !== -1) lruOrder.splice(idx, 1);
-  }
-  lruOrder.push(p);
-  lruSet.add(p);
-}
-
-function evictPage(page) {
-  const p = String(page);
-  if (cacheOld[p]) _trackedCacheBytes -= cacheOld[p].data.byteLength;
-  if (cacheNew[p]) _trackedCacheBytes -= cacheNew[p].data.byteLength;
-  delete cacheOld[p];
-  delete cacheNew[p];
-  if (lruSet.has(p)) {
-    const idx = lruOrder.indexOf(p);
-    if (idx !== -1) lruOrder.splice(idx, 1);
-    lruSet.delete(p);
-  }
-}
-
-function evictUntilFits(newBytes) {
-  const limitBytes = cacheMemLimitMB * 1048576;
-  let safety = lruOrder.length + 2;
-  while (_trackedCacheBytes + newBytes > limitBytes && lruOrder.length > 0 && safety-- > 0) {
-    const oldest = lruOrder[0];
-    if (oldest === String(currentPage)) {
-      if (lruOrder.length <= 1) break;
-      lruOrder.push(lruOrder.shift());
-      continue;
-    }
-    evictPage(oldest);
-  }
-}
-
-function estimatePageBytes() {
-  for (const k in cacheOld) {
-    if (cacheOld[k]) return cacheOld[k].data.byteLength * 2;
-  }
-  const scale = getRenderScale();
-  const basePixels = 1750 * 1237;
-  return basePixels * (scale * scale) * 4 * 2;
-}
+function isPageVecCached(p) { return vecCacheOld[p] !== undefined || vecCacheNew[p] !== undefined; }
 
 // ═══════════════════════════════════════
 //  INIT FILE (localStorage + export/import)
@@ -1139,11 +1070,7 @@ function resetToDefaults() {
   cacheAbort = true;
   try { localStorage.removeItem(INIT_KEY); } catch(e) {}
   pageOffsets = {};
-  cacheOld = {}; cacheNew = {};
-  _trackedCacheBytes = 0;
-  cachePPI = 0;
-  lruOrder = []; lruSet = new Set();
-  invalidateRecolor();
+  vecCacheOld = {}; vecCacheNew = {};
   clearThumbCache();
   thumbPPI = HARDCODED_DEFAULTS.thumbPPI;
   DOM.thumbPPIInput.value = thumbPPI;
@@ -1155,7 +1082,7 @@ function resetToDefaults() {
   currentZoom = 1;
   applyDefaults(HARDCODED_DEFAULTS);
   document.querySelectorAll('.preset-pill').forEach((el, i) => el.classList.toggle('selected', i === 0));
-  if (rawOld || rawNew) {
+  if (vecOld || vecNew) {
     hasRenderedOnce = false;
     cacheAbort = false;
     renderPage(currentPage).then(() => updateCacheUI());
@@ -1221,7 +1148,7 @@ const PRESETS = [
       DOM.colorNew.value = p.new;
       invalidateRecolor();
       syncColors();
-      if (rawOld || rawNew) recolorAndComposite();
+      if (vecOld || vecNew) recolorAndComposite();
     });
     DOM.presetGrid.appendChild(pill);
   });
@@ -1257,10 +1184,9 @@ async function loadPdf(file, which) {
   nameEl.textContent = file.name;
   zoneEl.classList.add('has-file');
   const buf = await file.arrayBuffer();
-  if (which === 'old') { pdfBufOld = buf.slice(0); recoloredOld = null; }
-  else { pdfBufNew = buf.slice(0); recoloredNew = null; }
-  cacheOld = {}; cacheNew = {}; lruOrder = []; lruSet = new Set();
-  _trackedCacheBytes = 0;
+  if (which === 'old') { pdfBufOld = buf.slice(0); }
+  else { pdfBufNew = buf.slice(0); }
+  vecCacheOld = {}; vecCacheNew = {};
   if (maxPages > 0) updateCacheUI();
   const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
   if (which === 'old') pdfOld = pdf; else pdfNew = pdf;
@@ -1270,12 +1196,13 @@ async function loadPdf(file, which) {
 }
 
 // ═══════════════════════════════════════
-//  RENDER SCALE
+//  RENDER SCALE (used only for thumbnails)
 // ═══════════════════════════════════════
 function getRenderScale() {
   const ppi = Math.max(36, Math.min(600, parseInt(DOM.ppiSelect.value) || 150));
   return ppi / 72;
 }
+function getMainDisplayScale() { return PDF_BASE_SCALE; }
 
 // ═══════════════════════════════════════
 //  COMPARE
@@ -1284,7 +1211,7 @@ async function runCompare() {
   if (processing) return;
   processing = true;
   cacheAbort = true; await sleep(50); cacheAbort = false;
-  DOM.btnCompare.textContent = 'Rendering page 1…';
+  DOM.btnCompare.textContent = 'Extracting vectors…';
   DOM.placeholder.style.display = 'none';
   DOM.canvasContainer.style.display = 'block';
   DOM.zoomBar.classList.add('show');
@@ -1298,10 +1225,6 @@ async function runCompare() {
   }
   maxPages = Math.max(pdfOld.numPages, pdfNew.numPages);
   currentPage = 1;
-  const ppi = parseInt(DOM.ppiSelect.value);
-  if (cachePPI !== ppi) { cacheOld = {}; cacheNew = {}; lruOrder = []; lruSet = new Set(); _trackedCacheBytes = 0; }
-  cachePPI = ppi;
-  invalidateRecolor();
   hasRenderedOnce = false;
   await renderPage(1);
   updatePageNav(); updateCacheUI();
@@ -1316,14 +1239,15 @@ async function runCompare() {
 // ═══════════════════════════════════════
 //  CACHE SYSTEM
 // ═══════════════════════════════════════
-function isPageCached(p) { return cacheOld[p] !== undefined && cacheNew[p] !== undefined; }
+function isPageCached(p) { return vecCacheOld[p] !== undefined || vecCacheNew[p] !== undefined; }
 function getCachedCount() { let n=0; for(let p=1;p<=maxPages;p++) if(isPageCached(p)) n++; return n; }
 
 function estimateCacheMemMB() {
-  let bytes = _trackedCacheBytes;
-  // Data URLs are base64-encoded; each char is 1 byte in JS string (UCS-2 = 2 bytes per char)
-  for (const k in thumbDataUrls) if (thumbDataUrls[k]) bytes += thumbDataUrls[k].length * 2;
-  return (bytes / 1048576).toFixed(1);
+  // Vector paths are very lightweight — rough estimate
+  let count = 0;
+  for (const k in vecCacheOld) if (vecCacheOld[k]) count += vecCacheOld[k].paths.length;
+  for (const k in vecCacheNew) if (vecCacheNew[k]) count += vecCacheNew[k].paths.length;
+  return (count * 0.001).toFixed(1); // ~1KB per path is a generous estimate
 }
 
 function updateCacheUI() {
@@ -1333,9 +1257,8 @@ function updateCacheUI() {
   DOM.cacheBar.style.width = total > 0 ? (cached/total*100)+'%' : '0%';
   DOM.cacheBar.style.background = cached >= total ? '#3fb950' : '#58a6ff';
   const usedMB = parseFloat(estimateCacheMemMB());
-  const pct = Math.min(100, (usedMB / cacheMemLimitMB * 100)).toFixed(0);
-  DOM.memEst.textContent = `~${usedMB} / ${cacheMemLimitMB} MB (${pct}%)`;
-  DOM.memEst.style.color = usedMB > cacheMemLimitMB * 0.9 ? '#ff6b6b' : '';
+  DOM.memEst.textContent = `Vector mode — ~${usedMB} MB (paths)`;
+  DOM.memEst.style.color = '';
   DOM.cacheIndicator.innerHTML = '';
   if (total > 0 && total <= 60) {
     let html = '';
@@ -1361,28 +1284,22 @@ DOM.cacheIndicator.addEventListener('click', e => {
 async function cacheRange() {
   const from = Math.max(1, parseInt(DOM.cacheFrom.value)||1);
   const to = Math.min(maxPages, parseInt(DOM.cacheTo.value)||maxPages);
-  if (from > to || !pdfOld || !pdfNew) return;
+  if (from > to) return;
   cacheAbort = false;
   for (let p = from; p <= to; p++) {
     if (cacheAbort) break;
-    if (isPageCached(p)) { touchLRU(p); continue; }
+    if (isPageCached(p)) continue;
     DOM.btnCompare.textContent = `Caching ${p}/${to}…`;
-    evictUntilFits(estimatePageBytes());
-    if (cacheOld[p] === undefined) {
-      const img = await renderPdfPage(pdfOld, p);
-      cacheOld[p] = img;
-      if (img) _trackedCacheBytes += img.data.byteLength;
+    if (pdfOld && vecCacheOld[p] === undefined) {
+      vecCacheOld[p] = await extractPageVectors(pdfOld, p);
     }
     if (cacheAbort) break;
-    if (cacheNew[p] === undefined) {
-      const img = await renderPdfPage(pdfNew, p);
-      cacheNew[p] = img;
-      if (img) _trackedCacheBytes += img.data.byteLength;
+    if (pdfNew && vecCacheNew[p] === undefined) {
+      vecCacheNew[p] = await extractPageVectors(pdfNew, p);
     }
     if (cacheAbort) break;
-    touchLRU(p);
     updateCacheUI();
-    await sleep(10);
+    await sleep(5);
   }
   DOM.btnCompare.textContent = 'Compare Revisions';
   updateCacheUI();
@@ -1390,130 +1307,442 @@ async function cacheRange() {
 async function cacheAllPages() { DOM.cacheFrom.value=1; DOM.cacheTo.value=maxPages; await cacheRange(); }
 function clearCache() {
   cacheAbort = true;
-  cacheOld = {}; cacheNew = {};
-  _trackedCacheBytes = 0;
-  invalidateRecolor();
-  lruOrder = []; lruSet = new Set();
-  if (rawOld) { cacheOld[currentPage] = rawOld; _trackedCacheBytes += rawOld.data.byteLength; touchLRU(currentPage); }
-  if (rawNew) { cacheNew[currentPage] = rawNew; _trackedCacheBytes += rawNew.data.byteLength; }
+  vecCacheOld = {}; vecCacheNew = {};
+  // Keep current page
+  if (vecOld) vecCacheOld[currentPage] = vecOld;
+  if (vecNew) vecCacheNew[currentPage] = vecNew;
   clearThumbCache();
   updateCacheUI();
 }
 
 // ═══════════════════════════════════════
-//  RENDER PAGE
+//  RENDER PAGE — vector extraction
 // ═══════════════════════════════════════
 async function renderPage(num) {
-  if (cacheOld[num] !== undefined) {
-    rawOld = cacheOld[num];
+  // Extract vector paths (cached)
+  if (vecCacheOld[num]) {
+    vecOld = vecCacheOld[num];
   } else {
-    evictUntilFits(estimatePageBytes());
-    rawOld = await renderPdfPage(pdfOld, num);
-    if (rawOld) {
-      cacheOld[num] = rawOld;
-      _trackedCacheBytes += rawOld.data.byteLength;
-    }
+    vecOld = await extractPageVectors(pdfOld, num);
+    if (vecOld) vecCacheOld[num] = vecOld;
   }
-  if (cacheNew[num] !== undefined) {
-    rawNew = cacheNew[num];
+  if (vecCacheNew[num]) {
+    vecNew = vecCacheNew[num];
   } else {
-    rawNew = await renderPdfPage(pdfNew, num);
-    if (rawNew) {
-      cacheNew[num] = rawNew;
-      _trackedCacheBytes += rawNew.data.byteLength;
-    }
+    vecNew = await extractPageVectors(pdfNew, num);
+    if (vecNew) vecCacheNew[num] = vecNew;
   }
-  if (!rawOld && !rawNew) return;
-  touchLRU(num);
-  invalidateRecolor();
-  _doRecolorAndComposite();
+  if (!vecOld && !vecNew) return;
+  vectorComposite();
   if (!hasRenderedOnce) { hasRenderedOnce = true; requestAnimationFrame(() => zoomFit()); _updateDrawToolbarVisibility(); }
 }
 
-async function renderPdfPage(pdf, num) {
-  if (!pdf || num > pdf.numPages) return null;
-  const page = await pdf.getPage(num);
-  const vp = page.getViewport({ scale: getRenderScale() });
-  const c = document.createElement('canvas');
-  c.width = vp.width; c.height = vp.height;
-  // FIX: willReadFrequently hint — tells browser we'll call getImageData
-  const ctx = c.getContext('2d', { willReadFrequently: true });
-  ctx.fillStyle = '#fff'; ctx.fillRect(0,0,vp.width,vp.height);
-  await page.render({ canvasContext: ctx, viewport: vp }).promise;
-  const imgData = ctx.getImageData(0,0,vp.width,vp.height);
-  c.width = 0; c.height = 0;
-  return imgData;
-}
+// Extract vector paths from a PDF page via getOperatorList
+async function extractPageVectors(pdf, pageNum) {
+  if (!pdf || pageNum > pdf.numPages) return null;
+  const page = await pdf.getPage(pageNum);
+  const vp = page.getViewport({ scale: 1 }); // scale=1 = PDF points (1pt = 1/72 inch)
+  const opList = await page.getOperatorList();
+  const OPS = pdfjsLib.OPS;
 
-// ═══════════════════════════════════════
-//  RECOLOR — cached, only recomputed when colors change
-// ═══════════════════════════════════════
-function invalidateRecolor() {
-  recoloredOld = null; recoloredNew = null;
-  lastColorOld = ''; lastColorNew = '';
-}
+  const paths = [];
+  const stateStack = [];
+  let ctm = [1, 0, 0, 1, 0, 0]; // current transform matrix
+  let strokeColor = [0, 0, 0];
+  let fillColor = [0, 0, 0];
+  let lineWidth = 1;
+  let lineCap = 0;
+  let lineJoin = 0;
+  let miterLimit = 10;
+  let dashArray = [];
+  let dashPhase = 0;
+  let currentPath = []; // array of sub-commands: {op, args}
 
-function recolor(src, rgb) {
-  const out = new ImageData(new Uint8ClampedArray(src.data), src.width, src.height);
-  const d = out.data;
-  const tR = rgb[0], tG = rgb[1], tB = rgb[2];
-  const len = d.length;
-  // FIX: tighter loop — bitwise truncation, cached invDk
-  for (let i = 0; i < len; i += 4) {
-    const dk = 1 - (0.299*d[i] + 0.587*d[i+1] + 0.114*d[i+2]) / 255;
-    if (dk < 0.03) {
-      d[i] = 255; d[i+1] = 255; d[i+2] = 255; d[i+3] = 0;
-    } else {
-      const invDk = 1 - dk;
-      d[i]   = (tR*dk + 255*invDk + 0.5) | 0;
-      d[i+1] = (tG*dk + 255*invDk + 0.5) | 0;
-      d[i+2] = (tB*dk + 255*invDk + 0.5) | 0;
-      d[i+3] = (dk*255 + 0.5) | 0;
+  // Text state
+  let textMatrix = [1, 0, 0, 1, 0, 0];
+  let fontObj = null;
+  let fontSize = 10;
+  let textRenderMode = 0; // 0=fill, 1=stroke, 2=fill+stroke, 3=invisible
+  let charSpacing = 0;
+  let wordSpacing = 0;
+  let hScale = 1;
+  let textRise = 0;
+  let inText = false;
+
+  function cloneState() {
+    return { ctm: ctm.slice(), strokeColor: strokeColor.slice(), fillColor: fillColor.slice(),
+      lineWidth, lineCap, lineJoin, miterLimit, dashArray: dashArray.slice(), dashPhase,
+      textMatrix: textMatrix.slice(), fontObj, fontSize, textRenderMode,
+      charSpacing, wordSpacing, hScale, textRise };
+  }
+
+  function restoreState(s) {
+    ctm = s.ctm; strokeColor = s.strokeColor; fillColor = s.fillColor;
+    lineWidth = s.lineWidth; lineCap = s.lineCap; lineJoin = s.lineJoin;
+    miterLimit = s.miterLimit; dashArray = s.dashArray; dashPhase = s.dashPhase;
+    textMatrix = s.textMatrix; fontObj = s.fontObj; fontSize = s.fontSize;
+    textRenderMode = s.textRenderMode; charSpacing = s.charSpacing;
+    wordSpacing = s.wordSpacing; hScale = s.hScale; textRise = s.textRise;
+  }
+
+  // Matrix multiply: [a,b,c,d,e,f] = 3x3 affine
+  function matMul(a, b) {
+    return [
+      a[0]*b[0]+a[2]*b[1], a[1]*b[0]+a[3]*b[1],
+      a[0]*b[2]+a[2]*b[3], a[1]*b[2]+a[3]*b[3],
+      a[0]*b[4]+a[2]*b[5]+a[4], a[1]*b[4]+a[3]*b[5]+a[5]
+    ];
+  }
+
+  // Transform a point by a matrix
+  function txPt(m, x, y) {
+    return [m[0]*x + m[2]*y + m[4], m[1]*x + m[3]*y + m[5]];
+  }
+
+  // PDF uses bottom-left origin; we need top-left. Build a flip matrix.
+  const flipM = [1, 0, 0, -1, 0, vp.height];
+  function toPx(x, y) {
+    // Apply CTM then flip
+    const [cx, cy] = txPt(ctm, x, y);
+    return txPt(flipM, cx, cy);
+  }
+
+  // Effective line width in page coords
+  function effectiveLineWidth() {
+    // Scale lineWidth by the average scale factor of CTM
+    const sx = Math.hypot(ctm[0], ctm[1]);
+    const sy = Math.hypot(ctm[2], ctm[3]);
+    return lineWidth * (sx + sy) / 2;
+  }
+
+  function finishPath(doStroke, doFill, doClose) {
+    if (currentPath.length === 0) { currentPath = []; return; }
+    // Build transformed path segments
+    const segs = [];
+    for (const cmd of currentPath) {
+      if (cmd.op === 'M') {
+        const [px, py] = toPx(cmd.x, cmd.y);
+        segs.push({ op: 'M', x: px, y: py });
+      } else if (cmd.op === 'L') {
+        const [px, py] = toPx(cmd.x, cmd.y);
+        segs.push({ op: 'L', x: px, y: py });
+      } else if (cmd.op === 'C') {
+        const [x1, y1] = toPx(cmd.x1, cmd.y1);
+        const [x2, y2] = toPx(cmd.x2, cmd.y2);
+        const [x3, y3] = toPx(cmd.x3, cmd.y3);
+        segs.push({ op: 'C', x1, y1, x2, y2, x3, y3 });
+      } else if (cmd.op === 'Z') {
+        segs.push({ op: 'Z' });
+      } else if (cmd.op === 'R') {
+        // Rectangle as 4 lines
+        const [ax, ay] = toPx(cmd.x, cmd.y);
+        const [bx, by] = toPx(cmd.x + cmd.w, cmd.y);
+        const [cx, cy] = toPx(cmd.x + cmd.w, cmd.y + cmd.h);
+        const [dx, dy] = toPx(cmd.x, cmd.y + cmd.h);
+        segs.push({ op: 'M', x: ax, y: ay });
+        segs.push({ op: 'L', x: bx, y: by });
+        segs.push({ op: 'L', x: cx, y: cy });
+        segs.push({ op: 'L', x: dx, y: dy });
+        segs.push({ op: 'Z' });
+      }
+    }
+    if (doClose && segs.length > 0) segs.push({ op: 'Z' });
+    if (segs.length > 0) {
+      const p = { segs };
+      if (doStroke) { p.stroke = strokeColor.slice(); p.lineWidth = effectiveLineWidth(); p.lineCap = lineCap; p.lineJoin = lineJoin; p.miterLimit = miterLimit; if (dashArray.length) { p.dash = dashArray.slice(); p.dashPhase = dashPhase; } }
+      if (doFill) { p.fill = fillColor.slice(); }
+      paths.push(p);
+    }
+    currentPath = [];
+  }
+
+  // Process text by converting glyphs to positioned fills
+  function processText(glyphs, isSpaced) {
+    if (!fontObj) return;
+    // Text rendering mode: 0=fill, 1=stroke, 2=fillstroke, 3=invisible
+    if (textRenderMode === 3) return;
+    const items = isSpaced ? glyphs : [glyphs];
+
+    for (const item of items) {
+      if (typeof item === 'number') {
+        // Spacing adjustment (in thousandths of text space unit)
+        const adj = -item * fontSize / 1000;
+        textMatrix = matMul(textMatrix, [1, 0, 0, 1, adj * hScale, 0]);
+        continue;
+      }
+      // item is a Uint8Array or string of glyph codes
+      if (!item || !item.length) continue;
+
+      // We can't easily decode glyphs without the full font mapping.
+      // Instead, record text as tiny rectangles at the glyph positions.
+      // This gives position-accurate colored marks for comparison.
+      // For each byte/code, advance by an estimated width.
+      const glyphWidth = fontSize * 0.6 * hScale; // approximate average glyph width
+      const glyphHeight = fontSize;
+
+      for (let g = 0; g < item.length; g++) {
+        // Position in text space
+        const tx = textMatrix[4];
+        const ty = textMatrix[5] + textRise;
+
+        // Build the glyph rectangle transform: textMatrix on top of CTM
+        const tm = matMul(ctm, textMatrix);
+        const [px, py] = txPt(flipM, tm[4], tm[5] + textRise);
+
+        // Width/height scaled by text+CTM
+        const sx = Math.hypot(tm[0], tm[1]);
+        const sy = Math.hypot(tm[2], tm[3]);
+        const gw = glyphWidth * sx;
+        const gh = glyphHeight * sy;
+
+        if (gw > 0.1 && gh > 0.1) {
+          // Add as a filled rectangle path
+          const segs = [
+            { op: 'M', x: px, y: py },
+            { op: 'L', x: px + gw, y: py },
+            { op: 'L', x: px + gw, y: py - gh },
+            { op: 'L', x: px, y: py - gh },
+            { op: 'Z' }
+          ];
+          const p = { segs, fill: fillColor.slice() };
+          if (textRenderMode === 1 || textRenderMode === 2) {
+            p.stroke = strokeColor.slice();
+            p.lineWidth = effectiveLineWidth() || 0.5;
+          }
+          paths.push(p);
+        }
+
+        // Advance text position
+        const advance = glyphWidth + charSpacing + (item[g] === 32 ? wordSpacing : 0);
+        textMatrix = matMul(textMatrix, [1, 0, 0, 1, advance, 0]);
+      }
     }
   }
-  return out;
-}
 
-// FIX: reuse temp canvases instead of creating new ones each frame
-function putImgToTempCanvas(img, tmpCanvas, tmpCtx) {
-  if (tmpCanvas.width !== img.width) tmpCanvas.width = img.width;
-  if (tmpCanvas.height !== img.height) tmpCanvas.height = img.height;
-  tmpCtx.putImageData(img, 0, 0);
-  return tmpCanvas;
-}
+  // Main operator loop
+  for (let i = 0; i < opList.fnArray.length; i++) {
+    const fn = opList.fnArray[i];
+    const args = opList.argsArray[i];
 
-// Synchronous recolor + composite — safe, no async race conditions
-function _doRecolorAndComposite() {
-  const cOldHex = DOM.colorOld.value;
-  const cNewHex = DOM.colorNew.value;
-  // Only recolor if color actually changed or data is new
-  if (!recoloredOld || lastColorOld !== cOldHex) {
-    recoloredOld = rawOld ? recolor(rawOld, hexToRgb(cOldHex)) : null;
-    lastColorOld = cOldHex;
+    switch (fn) {
+      case OPS.save: stateStack.push(cloneState()); break;
+      case OPS.restore: if (stateStack.length) restoreState(stateStack.pop()); break;
+      case OPS.transform: ctm = matMul(ctm, args); break;
+
+      // Graphics state
+      case OPS.setLineWidth: lineWidth = args[0]; break;
+      case OPS.setLineCap: lineCap = args[0]; break;
+      case OPS.setLineJoin: lineJoin = args[0]; break;
+      case OPS.setMiterLimit: miterLimit = args[0]; break;
+      case OPS.setDash: dashArray = args[0] || []; dashPhase = args[1] || 0; break;
+
+      // Colors
+      case OPS.setStrokeRGBColor: strokeColor = [args[0]*255, args[1]*255, args[2]*255]; break;
+      case OPS.setFillRGBColor: fillColor = [args[0]*255, args[1]*255, args[2]*255]; break;
+      case OPS.setStrokeGray: { const g = args[0]*255; strokeColor = [g, g, g]; } break;
+      case OPS.setFillGray: { const g = args[0]*255; fillColor = [g, g, g]; } break;
+      case OPS.setStrokeCMYKColor: {
+        const [c,m,y,k] = args;
+        strokeColor = [255*(1-c)*(1-k), 255*(1-m)*(1-k), 255*(1-y)*(1-k)];
+      } break;
+      case OPS.setFillCMYKColor: {
+        const [c,m,y,k] = args;
+        fillColor = [255*(1-c)*(1-k), 255*(1-m)*(1-k), 255*(1-y)*(1-k)];
+      } break;
+      case OPS.setStrokeColor:
+      case OPS.setStrokeColorN:
+        if (args.length >= 3) strokeColor = [args[0]*255, args[1]*255, args[2]*255];
+        else if (args.length >= 1) { const g = args[0]*255; strokeColor = [g, g, g]; }
+        break;
+      case OPS.setFillColor:
+      case OPS.setFillColorN:
+        if (args.length >= 3) fillColor = [args[0]*255, args[1]*255, args[2]*255];
+        else if (args.length >= 1) { const g = args[0]*255; fillColor = [g, g, g]; }
+        break;
+
+      // Path construction (bundled via constructPath)
+      case OPS.constructPath: {
+        const subOps = args[0], coords = args[1];
+        let ci = 0;
+        for (let s = 0; s < subOps.length; s++) {
+          switch (subOps[s]) {
+            case OPS.moveTo: currentPath.push({ op: 'M', x: coords[ci++], y: coords[ci++] }); break;
+            case OPS.lineTo: currentPath.push({ op: 'L', x: coords[ci++], y: coords[ci++] }); break;
+            case OPS.curveTo: currentPath.push({ op: 'C', x1: coords[ci++], y1: coords[ci++], x2: coords[ci++], y2: coords[ci++], x3: coords[ci++], y3: coords[ci++] }); break;
+            case OPS.curveTo2: {
+              // curveTo2: cp2 + end (cp1 = current point, but we store as cubic)
+              const x2 = coords[ci++], y2 = coords[ci++], x3 = coords[ci++], y3 = coords[ci++];
+              // Approximate: use last point as cp1
+              const lastPt = currentPath.length > 0 ? currentPath[currentPath.length-1] : null;
+              const px = lastPt ? (lastPt.x3||lastPt.x||0) : 0;
+              const py = lastPt ? (lastPt.y3||lastPt.y||0) : 0;
+              currentPath.push({ op: 'C', x1: px, y1: py, x2, y2, x3, y3 });
+            } break;
+            case OPS.curveTo3: {
+              // curveTo3: cp1 + end (cp2 = end point)
+              const x1 = coords[ci++], y1 = coords[ci++], x3 = coords[ci++], y3 = coords[ci++];
+              currentPath.push({ op: 'C', x1, y1, x2: x3, y2: y3, x3, y3 });
+            } break;
+            case OPS.rectangle: {
+              const rx = coords[ci++], ry = coords[ci++], rw = coords[ci++], rh = coords[ci++];
+              currentPath.push({ op: 'R', x: rx, y: ry, w: rw, h: rh });
+            } break;
+            case OPS.closePath: currentPath.push({ op: 'Z' }); break;
+          }
+        }
+      } break;
+
+      // Individual path ops (some PDF.js versions emit these directly)
+      case OPS.moveTo: currentPath.push({ op: 'M', x: args[0], y: args[1] }); break;
+      case OPS.lineTo: currentPath.push({ op: 'L', x: args[0], y: args[1] }); break;
+      case OPS.curveTo: currentPath.push({ op: 'C', x1: args[0], y1: args[1], x2: args[2], y2: args[3], x3: args[4], y3: args[5] }); break;
+      case OPS.rectangle: currentPath.push({ op: 'R', x: args[0], y: args[1], w: args[2], h: args[3] }); break;
+      case OPS.closePath: currentPath.push({ op: 'Z' }); break;
+
+      // Path painting
+      case OPS.stroke: finishPath(true, false, false); break;
+      case OPS.fill: case OPS.eoFill: finishPath(false, true, false); break;
+      case OPS.fillStroke: case OPS.eoFillStroke: finishPath(true, true, false); break;
+      case OPS.closeStroke: finishPath(true, false, true); break;
+      case OPS.closeFillStroke: case OPS.closeEOFillStroke: finishPath(true, true, true); break;
+      case OPS.endPath: currentPath = []; break;
+
+      // Text
+      case OPS.beginText: inText = true; textMatrix = [1, 0, 0, 1, 0, 0]; break;
+      case OPS.endText: inText = false; break;
+      case OPS.setFont:
+        fontObj = args[0]; // font name/reference
+        fontSize = args[1];
+        break;
+      case OPS.setTextMatrix: textMatrix = args.slice(0, 6); break;
+      case OPS.moveText: textMatrix = matMul(textMatrix, [1, 0, 0, 1, args[0], args[1]]); break;
+      case OPS.setLeadingMoveText: textMatrix = matMul(textMatrix, [1, 0, 0, 1, args[0], args[1]]); break;
+      case OPS.nextLine: textMatrix = matMul(textMatrix, [1, 0, 0, 1, 0, -fontSize]); break;
+      case OPS.setTextRenderingMode: textRenderMode = args[0]; break;
+      case OPS.setCharSpacing: charSpacing = args[0]; break;
+      case OPS.setWordSpacing: wordSpacing = args[0]; break;
+      case OPS.setHScale: hScale = args[0] / 100; break;
+      case OPS.setTextRise: textRise = args[0]; break;
+      case OPS.showText: processText(args[0], false); break;
+      case OPS.showSpacedText: processText(args[0], true); break;
+      case OPS.nextLineShowText:
+        textMatrix = matMul(textMatrix, [1, 0, 0, 1, 0, -fontSize]);
+        processText(args[0], false);
+        break;
+      case OPS.nextLineSetSpacingShowText:
+        wordSpacing = args[0]; charSpacing = args[1];
+        textMatrix = matMul(textMatrix, [1, 0, 0, 1, 0, -fontSize]);
+        processText(args[2], false);
+        break;
+
+      // Images — record as filled rectangles to show position
+      case OPS.paintImageXObject:
+      case OPS.paintInlineImageXObject:
+      case OPS.paintImageMaskXObject: {
+        // Images appear as 1×1 unit squares in current CTM
+        const [ax, ay] = toPx(0, 0);
+        const [bx, by] = toPx(1, 0);
+        const [cx, cy] = toPx(1, 1);
+        const [dx, dy] = toPx(0, 1);
+        const segs = [
+          { op: 'M', x: ax, y: ay },
+          { op: 'L', x: bx, y: by },
+          { op: 'L', x: cx, y: cy },
+          { op: 'L', x: dx, y: dy },
+          { op: 'Z' }
+        ];
+        paths.push({ segs, fill: fillColor.slice() });
+      } break;
+    }
   }
-  if (!recoloredNew || lastColorNew !== cNewHex) {
-    recoloredNew = rawNew ? recolor(rawNew, hexToRgb(cNewHex)) : null;
-    lastColorNew = cNewHex;
-  }
-  const w = Math.max(recoloredOld?recoloredOld.width:0, recoloredNew?recoloredNew.width:0);
-  const h = Math.max(recoloredOld?recoloredOld.height:0, recoloredNew?recoloredNew.height:0);
-  composite(w, h, recoloredOld, recoloredNew);
+
+  return { paths, pageW: vp.width, pageH: vp.height };
 }
 
-// FIX: rAF-gated — coalesces rapid slider/offset events into max 1 composite per frame
+// Render vector paths to a canvas with recoloring
+function renderVectorPaths(ctx, vecData, color, scale, dx, dy) {
+  if (!vecData) return;
+  const [tR, tG, tB] = hexToRgb(color);
+  const colorStr = color;
+
+  ctx.save();
+  ctx.translate(dx, dy);
+  ctx.scale(scale * PDF_BASE_SCALE, scale * PDF_BASE_SCALE);
+
+  for (const p of vecData.paths) {
+    // Determine darkness of original color for tinting
+    let dk = 1;
+    if (p.fill) {
+      const lum = (0.299*p.fill[0] + 0.587*p.fill[1] + 0.114*p.fill[2]) / 255;
+      dk = 1 - lum;
+    } else if (p.stroke) {
+      const lum = (0.299*p.stroke[0] + 0.587*p.stroke[1] + 0.114*p.stroke[2]) / 255;
+      dk = 1 - lum;
+    }
+    // Skip near-white elements (same logic as old recolor: dk < 0.03 → transparent)
+    if (dk < 0.03) continue;
+
+    // Tint: blend target color with white based on darkness
+    const invDk = 1 - dk;
+    const r = (tR*dk + 255*invDk + 0.5) | 0;
+    const g = (tG*dk + 255*invDk + 0.5) | 0;
+    const b = (tB*dk + 255*invDk + 0.5) | 0;
+    const a = dk; // alpha = darkness
+
+    const tintColor = `rgba(${r},${g},${b},${a})`;
+
+    ctx.beginPath();
+    for (const seg of p.segs) {
+      switch (seg.op) {
+        case 'M': ctx.moveTo(seg.x, seg.y); break;
+        case 'L': ctx.lineTo(seg.x, seg.y); break;
+        case 'C': ctx.bezierCurveTo(seg.x1, seg.y1, seg.x2, seg.y2, seg.x3, seg.y3); break;
+        case 'Z': ctx.closePath(); break;
+      }
+    }
+
+    if (p.fill) {
+      ctx.fillStyle = tintColor;
+      ctx.fill();
+    }
+    if (p.stroke) {
+      ctx.strokeStyle = tintColor;
+      ctx.lineWidth = p.lineWidth || 1;
+      ctx.lineCap = ['butt','round','square'][p.lineCap || 0];
+      ctx.lineJoin = ['miter','round','bevel'][p.lineJoin || 0];
+      ctx.miterLimit = p.miterLimit || 10;
+      if (p.dash && p.dash.length) ctx.setLineDash(p.dash);
+      else ctx.setLineDash([]);
+      ctx.stroke();
+    }
+  }
+  ctx.restore();
+}
+
+// Compute page dimensions in display pixels
+function getVecDisplaySize(vecData, scalePct) {
+  if (!vecData) return { w: 0, h: 0 };
+  const s = (scalePct / 100) * PDF_BASE_SCALE;
+  return { w: vecData.pageW * s, h: vecData.pageH * s };
+}
+
+// No-op for compatibility — recolor is now instant (just change color arg)
+function invalidateRecolor() {}
+
+// rAF-gated composite
 function recolorAndComposite() {
-  if (_compositeScheduled) return;  // already queued for this frame, skip
+  if (_compositeScheduled) return;
   _compositeScheduled = true;
   requestAnimationFrame(() => {
     _compositeScheduled = false;
-    _doRecolorAndComposite();
+    vectorComposite();
   });
 }
 
 // ═══════════════════════════════════════
-//  COMPOSITE — synchronous, uses reusable temp canvases, supports per-layer scale
+//  VECTOR COMPOSITE — renders Bezier paths directly to canvas
 // ═══════════════════════════════════════
-function composite(w, h, imgO, imgN) {
+function vectorComposite() {
   const out = DOM.canvasOutput;
   const aO = parseInt(DOM.sliderOpacityOld.value)/100;
   const aN = parseInt(DOM.sliderOpacityNew.value)/100;
@@ -1523,54 +1752,51 @@ function composite(w, h, imgO, imgN) {
   const off = getPageOffset(currentPage);
   const ox = off.x, oy = off.y;
   const absOx = Math.abs(ox), absOy = Math.abs(oy);
+  const colorOld = DOM.colorOld.value;
+  const colorNew = DOM.colorNew.value;
 
-  // Scaled dimensions for each layer
-  const wO = imgO ? imgO.width * sO : 0, hO = imgO ? imgO.height * sO : 0;
-  const wN = imgN ? imgN.width * sN : 0, hN = imgN ? imgN.height * sN : 0;
+  const dimO = getVecDisplaySize(vecOld, ps.old);
+  const dimN = getVecDisplaySize(vecNew, ps.new);
+  const wO = dimO.w, hO = dimO.h, wN = dimN.w, hN = dimN.h;
 
   if (mode === 'overlay') {
-    const totalW = Math.max(wO, wN + absOx), totalH = Math.max(hO, hN + absOy);
-    const canvasW = Math.max(wO + (ox < 0 ? absOx : 0), wN + (ox > 0 ? ox : 0), totalW);
-    const canvasH = Math.max(hO + (oy < 0 ? absOy : 0), hN + (oy > 0 ? oy : 0), totalH);
+    const canvasW = Math.max(wO + (ox < 0 ? absOx : 0), wN + (ox > 0 ? ox : 0), Math.max(wO, wN + absOx));
+    const canvasH = Math.max(hO + (oy < 0 ? absOy : 0), hN + (oy > 0 ? oy : 0), Math.max(hO, hN + absOy));
     const oldDx = ox<0?absOx:0, oldDy = oy<0?absOy:0;
     const newDx = ox>0?ox:0, newDy = oy>0?oy:0;
     out.width = canvasW; out.height = canvasH;
     const ctx = out.getContext('2d');
-    ctx.fillStyle = '#fff'; ctx.fillRect(0,0,canvasW,canvasH);
-    if (imgO && visOld) { ctx.globalAlpha=aO; ctx.drawImage(putImgToTempCanvas(imgO,_tmpCanvasA,_tmpCtxA),0,0,imgO.width,imgO.height,oldDx,oldDy,wO,hO); }
-    if (imgN && visNew) { ctx.globalAlpha=aN; ctx.drawImage(putImgToTempCanvas(imgN,_tmpCanvasB,_tmpCtxB),0,0,imgN.width,imgN.height,newDx,newDy,wN,hN); }
+    ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, canvasW, canvasH);
+    if (vecOld && visOld) { ctx.globalAlpha = aO; renderVectorPaths(ctx, vecOld, colorOld, sO, oldDx, oldDy); }
+    if (vecNew && visNew) { ctx.globalAlpha = aN; renderVectorPaths(ctx, vecNew, colorNew, sN, newDx, newDy); }
     ctx.globalAlpha = 1;
   } else {
-    // Side-by-side: render to two separate canvases
+    // Side-by-side
     const cOld = DOM.sbsCanvasOld, cNew = DOM.sbsCanvasNew;
-    // Old pane
-    if (imgO && visOld) {
+    if (vecOld && visOld) {
       cOld.width = wO; cOld.height = hO;
       const ctxO = cOld.getContext('2d');
-      ctxO.fillStyle = '#fff'; ctxO.fillRect(0,0,wO,hO);
+      ctxO.fillStyle = '#fff'; ctxO.fillRect(0, 0, wO, hO);
       ctxO.globalAlpha = aO;
-      ctxO.drawImage(putImgToTempCanvas(imgO,_tmpCanvasA,_tmpCtxA),0,0,imgO.width,imgO.height,0,0,wO,hO);
+      renderVectorPaths(ctxO, vecOld, colorOld, sO, 0, 0);
       ctxO.globalAlpha = 1;
     } else { cOld.width = 1; cOld.height = 1; }
-    // New pane (with offset)
-    if (imgN && visNew) {
+    if (vecNew && visNew) {
       const nw = wN + absOx, nh = hN + absOy;
       cNew.width = nw; cNew.height = nh;
       const ctxN = cNew.getContext('2d');
-      ctxN.fillStyle = '#fff'; ctxN.fillRect(0,0,nw,nh);
+      ctxN.fillStyle = '#fff'; ctxN.fillRect(0, 0, nw, nh);
       ctxN.globalAlpha = aN;
-      ctxN.drawImage(putImgToTempCanvas(imgN,_tmpCanvasB,_tmpCtxB),0,0,imgN.width,imgN.height, ox>=0?ox:0, oy>=0?oy:0, wN,hN);
+      renderVectorPaths(ctxN, vecNew, colorNew, sN, ox>=0?ox:0, oy>=0?oy:0);
       ctxN.globalAlpha = 1;
     } else { cNew.width = 1; cNew.height = 1; }
-    // Update labels with colors
-    DOM.sbsLabelOld.style.background = DOM.colorOld.value;
-    DOM.sbsLabelNew.style.background = DOM.colorNew.value;
-    // Also render to the main output canvas for export
+    DOM.sbsLabelOld.style.background = colorOld;
+    DOM.sbsLabelNew.style.background = colorNew;
     out.width = Math.max(wO, wN); out.height = Math.max(hO, hN);
     const ctx = out.getContext('2d');
-    ctx.fillStyle = '#fff'; ctx.fillRect(0,0,out.width,out.height);
-    if (imgO && visOld) { ctx.globalAlpha=aO; ctx.drawImage(cOld,0,0); }
-    if (imgN && visNew) { ctx.globalAlpha=aN; ctx.drawImage(cNew,0,0); }
+    ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, out.width, out.height);
+    if (vecOld && visOld) { ctx.globalAlpha = aO; ctx.drawImage(cOld, 0, 0); }
+    if (vecNew && visNew) { ctx.globalAlpha = aN; ctx.drawImage(cNew, 0, 0); }
     ctx.globalAlpha = 1;
   }
   applySbsZoom();
@@ -1587,7 +1813,7 @@ function applyZoom() {
   DOM.canvasOutput.style.width = '100%'; DOM.canvasOutput.style.height = '100%';
   DOM.drawCanvas.style.width = '100%'; DOM.drawCanvas.style.height = '100%';
   DOM.canvasPad.style.minWidth = (dw+48)+'px'; DOM.canvasPad.style.minHeight = (dh+48)+'px';
-  DOM.zoomLabel.textContent = Math.round(currentZoom*getRenderScale()*100)+'%';
+  DOM.zoomLabel.textContent = Math.round(currentZoom*getMainDisplayScale()*100)+'%';
 }
 function applySbsZoom() {
   if (mode !== 'sidebyside') return;
@@ -1622,7 +1848,7 @@ function updateOpacity() {
   DOM.valOpacityOld.textContent = DOM.sliderOpacityOld.value+'%';
   DOM.valOpacityNew.textContent = DOM.sliderOpacityNew.value+'%';
   syncColors();
-  if (rawOld || rawNew) recolorAndComposite();
+  if (vecOld || vecNew) recolorAndComposite();
 }
 // Scale: slider → input sync → apply
 function sliderScale() {
@@ -1645,7 +1871,7 @@ function _applyScale() {
   } else {
     setPageScale(currentPage, sO, sN);
   }
-  if (rawOld || rawNew) recolorAndComposite();
+  if (vecOld || vecNew) recolorAndComposite();
   scheduleThumbRefresh();
 }
 function resetScale() {
@@ -1655,7 +1881,7 @@ function resetScale() {
     delete pageScales[String(currentPage)];
   }
   loadScaleUI();
-  if (rawOld || rawNew) recolorAndComposite();
+  if (vecOld || vecNew) recolorAndComposite();
   scheduleThumbRefresh();
 }
 function matchScale() {
@@ -1666,7 +1892,7 @@ function matchScale() {
     const s = getPageScale(currentPage); setPageScale(currentPage, sN, s.new);
   }
   loadScaleUI();
-  if (rawOld || rawNew) recolorAndComposite();
+  if (vecOld || vecNew) recolorAndComposite();
   scheduleThumbRefresh();
 }
 function setMode(m) {
@@ -1683,43 +1909,25 @@ function setMode(m) {
       DOM.sbsWrapper.style.display = 'none';
     }
   }
-  if (rawOld || rawNew) recolorAndComposite();
+  if (vecOld || vecNew) recolorAndComposite();
 }
 function toggleVis(which) {
   if (which==='old') visOld=!visOld; else visNew=!visNew;
   syncColors();
-  if (rawOld || rawNew) recolorAndComposite();
+  if (vecOld || vecNew) recolorAndComposite();
 }
 const _onColorChange = debounce(() => {
   DOM.presetGrid.querySelectorAll('.preset-pill').forEach(el => el.classList.remove('selected'));
   invalidateRecolor(); syncColors();
-  if (rawOld || rawNew) recolorAndComposite();
+  if (vecOld || vecNew) recolorAndComposite();
 }, 80);
 // Immediate UI feedback for swatches, debounced recolor for performance
 DOM.colorOld.addEventListener('input', () => { syncColors(); _onColorChange(); });
 DOM.colorNew.addEventListener('input', () => { syncColors(); _onColorChange(); });
 
 async function changePPI() {
-  if (!pdfOld&&!pdfNew) return; if (!rawOld&&!rawNew) return;
-  const oldPPI = cachePPI || parseInt(DOM.ppiSelect.value);
-  const newPPI = parseInt(DOM.ppiSelect.value);
-  // Scale all offsets proportionally so alignment is preserved
-  if (oldPPI > 0 && newPPI > 0 && oldPPI !== newPPI) {
-    const ratio = newPPI / oldPPI;
-    for (const key in pageOffsets) {
-      pageOffsets[key].x = Math.round(pageOffsets[key].x * ratio);
-      pageOffsets[key].y = Math.round(pageOffsets[key].y * ratio);
-    }
-    loadOffsetUI();
-  }
-  cacheAbort = true; await sleep(50); cacheAbort = false;
-  cacheOld={}; cacheNew={}; lruOrder=[]; lruSet = new Set();
-  _trackedCacheBytes = 0;
-  invalidateRecolor();
-  cachePPI = newPPI;
-  DOM.btnCompare.textContent = 'Re-rendering…';
-  hasRenderedOnce = false;
-  await renderPage(currentPage);
+  // PPI now only affects thumbnail rendering — main view is vector
+  rebuildThumbsNow();
   DOM.btnCompare.textContent = 'Compare Revisions';
   updateCacheUI();
 }
@@ -1772,7 +1980,7 @@ function applyOffset() {
   if (DOM.offsetScope.value==='all') { for(let p=1;p<=maxPages;p++) setPageOffset(p,x,y); }
   else setPageOffset(currentPage,x,y);
   // FIX: rAF-gated — slider fires 60+ Hz, but we render max once/frame
-  if (rawOld||rawNew) recolorAndComposite();
+  if (vecOld||vecNew) recolorAndComposite();
   scheduleThumbRefresh();
 }
 function nudgeOffset(dx,dy) {
@@ -1780,14 +1988,14 @@ function nudgeOffset(dx,dy) {
   if (scope==='all') { for(let p=1;p<=maxPages;p++){const o=getPageOffset(p);setPageOffset(p,o.x+dx,o.y+dy);} }
   else { const o=getPageOffset(currentPage); setPageOffset(currentPage,o.x+dx,o.y+dy); }
   loadOffsetUI();
-  if (rawOld||rawNew) recolorAndComposite();
+  if (vecOld||vecNew) recolorAndComposite();
   scheduleThumbRefresh();
 }
 function resetOffset() {
   if (DOM.offsetScope.value==='all') pageOffsets={};
   else delete pageOffsets[String(currentPage)];
   loadOffsetUI();
-  if (rawOld||rawNew) recolorAndComposite();
+  if (vecOld||vecNew) recolorAndComposite();
   scheduleThumbRefresh();
 }
 
@@ -1876,19 +2084,19 @@ async function loadPreset(e) {
     pdfBufNew=base64ToBuf(p.pdfNewB64); pdfNew=await pdfjsLib.getDocument({data:pdfBufNew.slice(0)}).promise;
     DOM.nameNew.textContent=p.fileNew||'new.pdf'; DOM.zoneNew.classList.add('has-file');
     maxPages=Math.max(pdfOld.numPages,pdfNew.numPages); currentPage=p.currentPage||1; if(currentPage>maxPages) currentPage=1;
-    cachePPI=parseInt(DOM.ppiSelect.value); cacheOld={}; cacheNew={}; lruOrder=[]; lruSet=new Set(); _trackedCacheBytes=0;
+    vecCacheOld={}; vecCacheNew={};
     DOM.placeholder.style.display='none'; DOM.canvasContainer.style.display='block'; DOM.zoomBar.classList.add('show');
     if (mode === 'sidebyside') { DOM.canvasPad.style.display = 'none'; DOM.sbsWrapper.style.display = 'flex'; }
     else { DOM.canvasPad.style.display = ''; DOM.sbsWrapper.style.display = 'none'; }
-    DOM.btnCompare.disabled=false; DOM.btnCompare.textContent='Rendering page '+currentPage+'…'; await sleep(30);
-    invalidateRecolor(); syncColors(); loadOffsetUI();
+    DOM.btnCompare.disabled=false; DOM.btnCompare.textContent='Extracting vectors…'; await sleep(30);
+    syncColors(); loadOffsetUI();
     hasRenderedOnce=false; await renderPage(currentPage); updatePageNav(); updateCacheUI();
     DOM.cacheTo.value=maxPages;
     DOM.btnCompare.textContent='Compare Revisions';
     rebuildThumbsNow();
   } else {
     syncColors(); loadOffsetUI();
-    if (rawOld||rawNew) recolorAndComposite();
+    if (vecOld||vecNew) recolorAndComposite();
     DOM.btnCompare.textContent='Compare Revisions';
     alert('Preset loaded (settings only). Upload PDFs and click Compare.');
   }
@@ -1935,7 +2143,7 @@ async function exportPDF() {
   pdf.save(`overlay-page-${currentPage}.pdf`);
 }
 async function exportAllPDF() {
-  if(!rawOld&&!rawNew) return alert('Nothing to export.');
+  if(!vecOld&&!vecNew) return alert('Nothing to export.');
   if (!_ensureJsPDF()) return;
   const JsPDF = _getJsPDF(), btn=$('btn-export-all'), origText=btn.textContent;
   let pdf=null;
@@ -1957,7 +2165,7 @@ async function exportAllPDF() {
 }
 
 async function exportAllPNG() {
-  if (!rawOld && !rawNew) return alert('Nothing to export.');
+  if (!vecOld && !vecNew) return alert('Nothing to export.');
   if (typeof JSZip === 'undefined') return alert('JSZip library not available.');
   const zip = new JSZip();
   const btn = $('btn-export-zip');
@@ -2052,7 +2260,7 @@ async function exportAllPNG() {
     currentZoom = Math.max(0.03, Math.min(5, currentZoom + d));
     const r = currentZoom / old;
     applySbsZoom();
-    DOM.zoomLabel.textContent = Math.round(currentZoom*getRenderScale()*100)+'%';
+    DOM.zoomLabel.textContent = Math.round(currentZoom*getMainDisplayScale()*100)+'%';
     // Adjust scroll to keep zoom centered on cursor for the pane being scrolled
     const pane = e.currentTarget;
     const rect = pane.getBoundingClientRect();
