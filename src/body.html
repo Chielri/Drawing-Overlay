@@ -187,21 +187,45 @@
     <div class="sbs-wrapper" id="sbs-wrapper" style="display:none;">
       <div class="sbs-pane" id="sbs-pane-old">
         <div class="sbs-label" id="sbs-label-old">OLD</div>
-        <div class="sbs-crosshair" id="sbs-crosshair-old"></div>
+        <canvas class="sbs-crosshair-canvas" id="sbs-xhair-old"></canvas>
         <div class="sbs-scroll" id="sbs-scroll-old">
-          <div class="sbs-canvas-wrap"><canvas id="sbs-canvas-old"></canvas></div>
+          <div class="sbs-canvas-wrap">
+            <canvas id="sbs-canvas-old"></canvas>
+            <canvas class="sbs-draw-layer" id="sbs-draw-old"></canvas>
+          </div>
         </div>
       </div>
       <div class="sbs-divider"></div>
       <div class="sbs-pane" id="sbs-pane-new">
         <div class="sbs-label" id="sbs-label-new">NEW</div>
-        <div class="sbs-crosshair" id="sbs-crosshair-new"></div>
+        <canvas class="sbs-crosshair-canvas" id="sbs-xhair-new"></canvas>
         <div class="sbs-scroll" id="sbs-scroll-new">
-          <div class="sbs-canvas-wrap"><canvas id="sbs-canvas-new"></canvas></div>
+          <div class="sbs-canvas-wrap">
+            <canvas id="sbs-canvas-new"></canvas>
+            <canvas class="sbs-draw-layer" id="sbs-draw-new"></canvas>
+          </div>
         </div>
       </div>
     </div>
   </div>
+</div>
+<div class="draw-toolbar" id="draw-toolbar">
+  <button class="draw-tool-btn active" id="draw-tool-pan" onclick="setDrawTool('pan')" title="Pan (V)">✥</button>
+  <button class="draw-tool-btn" id="draw-tool-pen" onclick="setDrawTool('pen')" title="Pen (P)">✎</button>
+  <button class="draw-tool-btn" id="draw-tool-line" onclick="setDrawTool('line')" title="Line (L)">╱</button>
+  <button class="draw-tool-btn" id="draw-tool-arrow" onclick="setDrawTool('arrow')" title="Arrow (A)">→</button>
+  <button class="draw-tool-btn" id="draw-tool-rect" onclick="setDrawTool('rect')" title="Rectangle (R)">▭</button>
+  <button class="draw-tool-btn" id="draw-tool-text" onclick="setDrawTool('text')" title="Text (T)">T</button>
+  <span class="draw-sep"></span>
+  <input type="color" class="draw-color-pick" id="draw-color" value="#ff1744" title="Stroke color" />
+  <select class="draw-width-pick" id="draw-width" title="Stroke width">
+    <option value="1">1px</option>
+    <option value="2" selected>2px</option>
+    <option value="3">3px</option>
+    <option value="5">5px</option>
+  </select>
+  <button class="draw-tool-btn" id="draw-tool-undo" onclick="drawUndo()" title="Undo (Ctrl+Z)">↩</button>
+  <button class="draw-tool-btn" id="draw-tool-clear" onclick="drawClear()" title="Clear all">✕</button>
 </div>
 <div class="zoom-bar" id="zoom-bar">
   <button class="zoom-btn" onclick="doZoom(-0.15)">−</button>

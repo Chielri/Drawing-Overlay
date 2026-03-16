@@ -176,17 +176,43 @@
   }
   .sbs-scroll { flex: 1; overflow: auto; cursor: grab; background: var(--bg); }
   .sbs-scroll.dragging { cursor: grabbing; user-select: none; }
-  .sbs-canvas-wrap { padding: 24px; display: inline-flex; min-width: 100%; min-height: 100%; align-items: center; justify-content: center; }
+  .sbs-canvas-wrap { padding: 24px; display: inline-flex; min-width: 100%; min-height: 100%; align-items: center; justify-content: center; position: relative; }
   .sbs-canvas-wrap canvas { display: block; box-shadow: 0 4px 20px rgba(0,0,0,0.3); border-radius: 4px; background: #fff; }
-  .sbs-crosshair {
-    display: none; position: absolute; z-index: 15; pointer-events: none;
-    width: 20px; height: 20px; transform: translate(-50%, -50%);
+  .sbs-crosshair-canvas {
+    position: absolute; inset: 0; z-index: 12; pointer-events: none;
+    width: 100%; height: 100%;
   }
-  .sbs-crosshair::before, .sbs-crosshair::after {
-    content: ''; position: absolute; background: rgba(255,255,255,0.85);
-    border-radius: 1px;
+  .sbs-draw-layer {
+    position: absolute; top: 0; left: 0; pointer-events: none;
+    box-shadow: none !important; background: transparent !important;
+    border-radius: 4px;
   }
-  .sbs-crosshair::before { width: 2px; height: 100%; left: 50%; transform: translateX(-50%); }
-  .sbs-crosshair::after { height: 2px; width: 100%; top: 50%; transform: translateY(-50%); }
-  .sbs-crosshair.visible { display: block; }
   .sbs-divider { width: 3px; flex-shrink: 0; background: var(--border); }
+
+  /* Drawing toolbar */
+  .draw-toolbar {
+    position: fixed; bottom: 14px; left: 50%; transform: translateX(-50%);
+    display: none; gap: 2px; align-items: center;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+    padding: 3px 6px; z-index: 20;
+  }
+  .draw-toolbar.show { display: inline-flex; }
+  .draw-tool-btn {
+    padding: 5px 9px; background: transparent; border: 1px solid transparent;
+    border-radius: 6px; color: var(--text-dim); font-size: 14px; cursor: pointer;
+    font-family: 'DM Sans', sans-serif; transition: all 0.12s;
+  }
+  .draw-tool-btn:hover { color: var(--text); background: var(--surface2); }
+  .draw-tool-btn.active { color: var(--blue); border-color: var(--blue); background: var(--blue-dim); }
+  .draw-sep { width: 1px; height: 20px; background: var(--border); margin: 0 4px; }
+  .draw-color-pick {
+    -webkit-appearance: none; border: 2px solid var(--border); border-radius: 5px;
+    width: 26px; height: 22px; cursor: pointer; background: transparent; padding: 1px;
+  }
+  .draw-color-pick::-webkit-color-swatch-wrapper { padding: 0; }
+  .draw-color-pick::-webkit-color-swatch { border: none; border-radius: 3px; }
+  .draw-width-pick {
+    padding: 3px 4px; border: 1px solid var(--border); border-radius: 5px;
+    background: var(--surface2); color: var(--text); font-family: 'JetBrains Mono', monospace;
+    font-size: 10px; cursor: pointer; outline: none;
+  }
