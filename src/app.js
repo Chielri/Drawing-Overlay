@@ -42,7 +42,10 @@ const DOM = {
   sbsScrollOld: $('sbs-scroll-old'), sbsScrollNew: $('sbs-scroll-new'),
   sbsCanvasOld: $('sbs-canvas-old'), sbsCanvasNew: $('sbs-canvas-new'),
   sbsLabelOld: $('sbs-label-old'), sbsLabelNew: $('sbs-label-new'),
-  sbsCrosshairOld: $('sbs-crosshair-old'), sbsCrosshairNew: $('sbs-crosshair-new'),
+  sbsXhairOld: $('sbs-xhair-old'), sbsXhairNew: $('sbs-xhair-new'),
+  sbsDrawOld: $('sbs-draw-old'), sbsDrawNew: $('sbs-draw-new'),
+  drawToolbar: $('draw-toolbar'),
+  drawColor: $('draw-color'), drawWidth: $('draw-width'),
 };
 
 // ═══════════════════════════════════════
@@ -79,6 +82,11 @@ let thumbRendering = false;
 
 let _compositeScheduled = false;
 let _sbsSyncLock = false; // prevents scroll-sync infinite loop
+
+// Drawing state
+let drawTool = 'pan'; // 'pan' | 'pen' | 'line' | 'arrow' | 'rect' | 'text'
+let drawStrokes = { old: [], new: [] }; // per-page arrays of stroke objects
+let _drawCurrent = null; // in-progress stroke
 
 const _tmpCanvasA = document.createElement('canvas');
 const _tmpCanvasB = document.createElement('canvas');
@@ -393,6 +401,7 @@ async function runCompare() {
   DOM.placeholder.style.display = 'none';
   DOM.canvasContainer.style.display = 'block';
   DOM.zoomBar.classList.add('show');
+  DOM.drawToolbar.classList.add('show');
   // Set correct layout for current mode
   if (mode === 'sidebyside') {
     DOM.canvasPad.style.display = 'none';
@@ -670,6 +679,10 @@ function composite(w, h, imgO, imgN) {
     // Update labels with colors
     DOM.sbsLabelOld.style.background = DOM.colorOld.value;
     DOM.sbsLabelNew.style.background = DOM.colorNew.value;
+    // Re-render draw layers on top
+    if (typeof renderDrawLayer === 'function') {
+      renderDrawLayer('old'); renderDrawLayer('new');
+    }
     // Also render to the main output canvas for export
     out.width = Math.max(wO, wN); out.height = Math.max(hO, hN);
     const ctx = out.getContext('2d');
@@ -698,6 +711,9 @@ function applySbsZoom() {
   const cO = DOM.sbsCanvasOld, cN = DOM.sbsCanvasNew;
   cO.style.width = (cO.width*currentZoom)+'px'; cO.style.height = (cO.height*currentZoom)+'px';
   cN.style.width = (cN.width*currentZoom)+'px'; cN.style.height = (cN.height*currentZoom)+'px';
+  // Sync draw layer sizes
+  syncDrawLayerSize('old');
+  syncDrawLayerSize('new');
 }
 function doZoom(delta) {
   currentZoom = Math.max(0.03, Math.min(5, currentZoom+delta));
@@ -980,7 +996,7 @@ async function loadPreset(e) {
     DOM.nameNew.textContent=p.fileNew||'new.pdf'; DOM.zoneNew.classList.add('has-file');
     maxPages=Math.max(pdfOld.numPages,pdfNew.numPages); currentPage=p.currentPage||1; if(currentPage>maxPages) currentPage=1;
     cachePPI=parseInt(DOM.ppiSelect.value); cacheOld={}; cacheNew={}; lruOrder=[]; lruSet=new Set(); _trackedCacheBytes=0;
-    DOM.placeholder.style.display='none'; DOM.canvasContainer.style.display='block'; DOM.zoomBar.classList.add('show');
+    DOM.placeholder.style.display='none'; DOM.canvasContainer.style.display='block'; DOM.zoomBar.classList.add('show'); DOM.drawToolbar.classList.add('show');
     if (mode === 'sidebyside') { DOM.canvasPad.style.display = 'none'; DOM.sbsWrapper.style.display = 'flex'; }
     else { DOM.canvasPad.style.display = ''; DOM.sbsWrapper.style.display = 'none'; }
     DOM.btnCompare.disabled=false; DOM.btnCompare.textContent='Rendering page '+currentPage+'…'; await sleep(30);
@@ -1080,8 +1096,10 @@ async function exportAllPNG() {
   const area=DOM.canvasArea; let drag=false,sx,sy,sl,st;
   area.addEventListener('mousedown',e=>{
     if(e.target.closest('.zoom-bar')||e.target.closest('.sbs-wrapper'))return;
+    if(e.button!==1&&drawTool!=='pan')return; // left-click only in pan mode, middle-click always
     drag=true;area.classList.add('dragging');sx=e.clientX;sy=e.clientY;sl=area.scrollLeft;st=area.scrollTop;e.preventDefault();
   });
+  area.addEventListener('auxclick',e=>{if(e.button===1)e.preventDefault();}); // prevent middle-click autoscroll
   window.addEventListener('mousemove',e=>{if(!drag)return;area.scrollLeft=sl-(e.clientX-sx);area.scrollTop=st-(e.clientY-sy);});
   window.addEventListener('mouseup',()=>{if(!drag)return;drag=false;area.classList.remove('dragging');});
   area.addEventListener('wheel',e=>{
@@ -1114,10 +1132,12 @@ async function exportAllPNG() {
   function initPaneDrag(pane) {
     let drag=false, sx, sy, sl, st;
     pane.addEventListener('mousedown', e => {
+      if(e.button!==1&&drawTool!=='pan') return; // left-click only in pan mode, middle-click always
       drag=true; pane.classList.add('dragging');
       sx=e.clientX; sy=e.clientY; sl=pane.scrollLeft; st=pane.scrollTop;
       e.preventDefault();
     });
+    pane.addEventListener('auxclick', e=>{if(e.button===1)e.preventDefault();}); // prevent middle-click autoscroll
     window.addEventListener('mousemove', e => {
       if(!drag) return;
       pane.scrollLeft = sl-(e.clientX-sx);
@@ -1151,21 +1171,55 @@ async function exportAllPNG() {
   sO.addEventListener('wheel', sbsWheelZoom, {passive:false});
   sN.addEventListener('wheel', sbsWheelZoom, {passive:false});
 
-  // Synced crosshair: hovering one pane shows a cursor marker on the other
-  function positionCrosshair(sourcePane, targetCrosshair, e) {
-    const rect = sourcePane.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
-    targetCrosshair.style.left = x + 'px';
-    targetCrosshair.style.top = y + 'px';
-    targetCrosshair.classList.add('visible');
+  // ── Crosshair overlay canvases ──
+  function resizeXhair(canvas, pane) {
+    const w = pane.clientWidth, h = pane.clientHeight;
+    if (canvas.width !== w || canvas.height !== h) {
+      canvas.width = w; canvas.height = h;
+    }
   }
-  function hideCrosshair(ch) { ch.classList.remove('visible'); }
+  function drawXhair(canvas, x, y) {
+    resizeXhair(canvas, canvas.parentElement);
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    if (x < 0) return; // hidden
+    ctx.strokeStyle = 'rgba(255,255,255,0.7)';
+    ctx.lineWidth = 1;
+    ctx.setLineDash([4, 4]);
+    ctx.beginPath();
+    ctx.moveTo(x, 0); ctx.lineTo(x, canvas.height);
+    ctx.moveTo(0, y); ctx.lineTo(canvas.width, y);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    // small dot at intersection
+    ctx.fillStyle = 'rgba(255,255,255,0.9)';
+    ctx.beginPath();
+    ctx.arc(x, y, 3, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  function clearXhair(canvas) {
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+  }
 
-  sO.addEventListener('mousemove', e => positionCrosshair(sO, DOM.sbsCrosshairNew, e));
-  sN.addEventListener('mousemove', e => positionCrosshair(sN, DOM.sbsCrosshairOld, e));
-  sO.addEventListener('mouseleave', () => hideCrosshair(DOM.sbsCrosshairNew));
-  sN.addEventListener('mouseleave', () => hideCrosshair(DOM.sbsCrosshairOld));
+  // Track mouse position in viewport-relative coords for the pane
+  function paneMousePos(pane, e) {
+    const rect = pane.getBoundingClientRect();
+    return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+  }
+
+  sO.addEventListener('mousemove', e => {
+    const pos = paneMousePos(sO, e);
+    drawXhair(DOM.sbsXhairOld, pos.x, pos.y);
+    drawXhair(DOM.sbsXhairNew, pos.x, pos.y);
+  });
+  sN.addEventListener('mousemove', e => {
+    const pos = paneMousePos(sN, e);
+    drawXhair(DOM.sbsXhairOld, pos.x, pos.y);
+    drawXhair(DOM.sbsXhairNew, pos.x, pos.y);
+  });
+  sO.addEventListener('mouseleave', () => { clearXhair(DOM.sbsXhairOld); clearXhair(DOM.sbsXhairNew); });
+  sN.addEventListener('mouseleave', () => { clearXhair(DOM.sbsXhairOld); clearXhair(DOM.sbsXhairNew); });
 })();
 
 // ═══════════════════════════════════════
@@ -1309,9 +1363,214 @@ function changeThumbPPI() {
 //  KEYBOARD
 // ═══════════════════════════════════════
 window.addEventListener('keydown',e=>{
-  if(isInputFocused()||maxPages<=1) return;
+  if(isInputFocused()) return;
+  // Drawing tool shortcuts
+  if(e.key==='v'||e.key==='V'){setDrawTool('pan');return;}
+  if(e.key==='p'&&!e.ctrlKey&&!e.metaKey){setDrawTool('pen');return;}
+  if(e.key==='l'||e.key==='L'){setDrawTool('line');return;}
+  if(e.key==='a'&&!e.ctrlKey&&!e.metaKey){setDrawTool('arrow');return;}
+  if(e.key==='r'&&!e.ctrlKey&&!e.metaKey){setDrawTool('rect');return;}
+  if(e.key==='t'&&!e.ctrlKey&&!e.metaKey){setDrawTool('text');return;}
+  if((e.ctrlKey||e.metaKey)&&e.key==='z'){e.preventDefault();drawUndo();return;}
+  if(maxPages<=1) return;
   if(e.key==='ArrowLeft'||e.key==='PageUp'){e.preventDefault();changePage(-1);}
   else if(e.key==='ArrowRight'||e.key==='PageDown'){e.preventDefault();changePage(1);}
   else if(e.key==='Home'){e.preventDefault();currentPage=1;loadOffsetUI();renderPage(1);updatePageNav();}
   else if(e.key==='End'){e.preventDefault();currentPage=maxPages;loadOffsetUI();renderPage(maxPages);updatePageNav();}
 });
+
+// ═══════════════════════════════════════
+//  DRAWING TOOLS
+// ═══════════════════════════════════════
+function syncDrawLayerSize(side) {
+  const draw = side === 'old' ? DOM.sbsDrawOld : DOM.sbsDrawNew;
+  const src = side === 'old' ? DOM.sbsCanvasOld : DOM.sbsCanvasNew;
+  if (draw.width !== src.width || draw.height !== src.height) {
+    draw.width = src.width; draw.height = src.height;
+  }
+  draw.style.width = src.style.width;
+  draw.style.height = src.style.height;
+}
+function setDrawTool(tool) {
+  drawTool = tool;
+  ['pan','pen','line','arrow','rect','text'].forEach(t => {
+    const btn = document.getElementById('draw-tool-' + t);
+    if (btn) btn.classList.toggle('active', t === tool);
+  });
+  // Update cursor style on SBS scroll panes & overlay area
+  const cursor = tool === 'pan' ? 'grab' : 'crosshair';
+  DOM.sbsScrollOld.style.cursor = cursor;
+  DOM.sbsScrollNew.style.cursor = cursor;
+  DOM.canvasArea.style.cursor = cursor;
+  // Enable/disable pointer-events on draw layers
+  const pe = tool === 'pan' ? 'none' : 'auto';
+  DOM.sbsDrawOld.style.pointerEvents = pe;
+  DOM.sbsDrawNew.style.pointerEvents = pe;
+}
+
+function getDrawKey(side) { return currentPage + '_' + side; }
+
+function drawStrokesFor(side) {
+  const key = getDrawKey(side);
+  if (!drawStrokes[key]) drawStrokes[key] = [];
+  return drawStrokes[key];
+}
+
+// Convert client coords to canvas-space coords (accounting for zoom + scroll)
+function clientToCanvas(e, scrollPane, canvas) {
+  const rect = canvas.getBoundingClientRect();
+  const scaleX = canvas.width / rect.width;
+  const scaleY = canvas.height / rect.height;
+  return {
+    x: (e.clientX - rect.left) * scaleX,
+    y: (e.clientY - rect.top) * scaleY
+  };
+}
+
+function renderDrawLayer(side) {
+  const canvas = side === 'old' ? DOM.sbsDrawOld : DOM.sbsDrawNew;
+  const srcCanvas = side === 'old' ? DOM.sbsCanvasOld : DOM.sbsCanvasNew;
+  // Match draw layer size to source canvas
+  if (canvas.width !== srcCanvas.width || canvas.height !== srcCanvas.height) {
+    canvas.width = srcCanvas.width;
+    canvas.height = srcCanvas.height;
+  }
+  // Match CSS display size
+  canvas.style.width = srcCanvas.style.width;
+  canvas.style.height = srcCanvas.style.height;
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  const strokes = drawStrokesFor(side);
+  strokes.forEach(s => drawStrokeToCtx(ctx, s));
+  if (_drawCurrent && _drawCurrent.side === side) {
+    drawStrokeToCtx(ctx, _drawCurrent);
+  }
+}
+
+function drawStrokeToCtx(ctx, s) {
+  ctx.strokeStyle = s.color;
+  ctx.fillStyle = s.color;
+  ctx.lineWidth = s.width;
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  if (s.tool === 'pen') {
+    if (s.pts.length < 2) return;
+    ctx.beginPath();
+    ctx.moveTo(s.pts[0].x, s.pts[0].y);
+    for (let i = 1; i < s.pts.length; i++) ctx.lineTo(s.pts[i].x, s.pts[i].y);
+    ctx.stroke();
+  } else if (s.tool === 'line') {
+    if (!s.x2) return;
+    ctx.beginPath();
+    ctx.moveTo(s.x1, s.y1); ctx.lineTo(s.x2, s.y2);
+    ctx.stroke();
+  } else if (s.tool === 'arrow') {
+    if (!s.x2) return;
+    ctx.beginPath();
+    ctx.moveTo(s.x1, s.y1); ctx.lineTo(s.x2, s.y2);
+    ctx.stroke();
+    // Arrowhead
+    const angle = Math.atan2(s.y2 - s.y1, s.x2 - s.x1);
+    const headLen = Math.max(10, s.width * 5);
+    ctx.beginPath();
+    ctx.moveTo(s.x2, s.y2);
+    ctx.lineTo(s.x2 - headLen * Math.cos(angle - 0.4), s.y2 - headLen * Math.sin(angle - 0.4));
+    ctx.moveTo(s.x2, s.y2);
+    ctx.lineTo(s.x2 - headLen * Math.cos(angle + 0.4), s.y2 - headLen * Math.sin(angle + 0.4));
+    ctx.stroke();
+  } else if (s.tool === 'rect') {
+    if (!s.x2) return;
+    ctx.strokeRect(Math.min(s.x1, s.x2), Math.min(s.y1, s.y2),
+                   Math.abs(s.x2 - s.x1), Math.abs(s.y2 - s.y1));
+  } else if (s.tool === 'text') {
+    const fontSize = Math.max(14, s.width * 6);
+    ctx.font = `${fontSize}px 'DM Sans', sans-serif`;
+    ctx.fillText(s.text, s.x1, s.y1);
+  }
+}
+
+// Wire up drawing on SBS draw layers
+function initDrawLayer(drawCanvas, scrollPane, side) {
+  let drawing = false;
+
+  drawCanvas.addEventListener('mousedown', e => {
+    if (drawTool === 'pan') return;
+    e.preventDefault(); e.stopPropagation();
+    const pos = clientToCanvas(e, scrollPane, drawCanvas);
+    const color = DOM.drawColor.value;
+    const width = parseInt(DOM.drawWidth.value);
+
+    if (drawTool === 'text') {
+      const text = prompt('Enter text:');
+      if (text) {
+        drawStrokesFor(side).push({ tool: 'text', x1: pos.x, y1: pos.y, color, width, text });
+        renderDrawLayer(side);
+      }
+      return;
+    }
+
+    drawing = true;
+    if (drawTool === 'pen') {
+      _drawCurrent = { tool: 'pen', pts: [pos], color, width, side };
+    } else {
+      _drawCurrent = { tool: drawTool, x1: pos.x, y1: pos.y, x2: null, y2: null, color, width, side };
+    }
+  });
+
+  window.addEventListener('mousemove', e => {
+    if (!drawing || !_drawCurrent || _drawCurrent.side !== side) return;
+    const pos = clientToCanvas(e, scrollPane, drawCanvas);
+    if (_drawCurrent.tool === 'pen') {
+      _drawCurrent.pts.push(pos);
+    } else {
+      _drawCurrent.x2 = pos.x;
+      _drawCurrent.y2 = pos.y;
+    }
+    renderDrawLayer(side);
+  });
+
+  window.addEventListener('mouseup', () => {
+    if (!drawing || !_drawCurrent || _drawCurrent.side !== side) return;
+    drawing = false;
+    // Only save if there's meaningful content
+    const s = _drawCurrent;
+    let valid = false;
+    if (s.tool === 'pen' && s.pts.length >= 2) valid = true;
+    if ((s.tool === 'line' || s.tool === 'arrow' || s.tool === 'rect') && s.x2 != null) valid = true;
+    if (valid) {
+      const saved = { ...s };
+      delete saved.side;
+      drawStrokesFor(side).push(saved);
+    }
+    _drawCurrent = null;
+    renderDrawLayer(side);
+  });
+}
+
+initDrawLayer(DOM.sbsDrawOld, DOM.sbsScrollOld, 'old');
+initDrawLayer(DOM.sbsDrawNew, DOM.sbsScrollNew, 'new');
+
+function drawUndo() {
+  // Undo last stroke from whichever side was drawn last
+  for (const side of ['old', 'new']) {
+    const key = getDrawKey(side);
+    if (drawStrokes[key] && drawStrokes[key].length > 0) {
+      // Find which side has the most recent stroke (just pop from both alternately)
+    }
+  }
+  // Simple: undo from old first, then new
+  const keyOld = getDrawKey('old'), keyNew = getDrawKey('new');
+  const sOld = drawStrokes[keyOld] || [], sNew = drawStrokes[keyNew] || [];
+  if (sNew.length >= sOld.length && sNew.length > 0) {
+    sNew.pop(); renderDrawLayer('new');
+  } else if (sOld.length > 0) {
+    sOld.pop(); renderDrawLayer('old');
+  }
+}
+
+function drawClear() {
+  drawStrokes[getDrawKey('old')] = [];
+  drawStrokes[getDrawKey('new')] = [];
+  renderDrawLayer('old');
+  renderDrawLayer('new');
+}
