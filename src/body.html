@@ -172,6 +172,27 @@
       <div class="offset-hint">All transforms stored per page.</div>
     </div>
     <div class="control-group">
+      <div class="section-title">Measurement Calibration</div>
+      <div class="align3-status" id="calib-status">Not calibrated (showing px)</div>
+      <div class="offset-wrap">
+        <div class="offset-axis-header">
+          <span class="offset-label">Unit</span>
+          <select class="draw-width-pick" id="calib-unit" style="width:auto;padding:3px 8px;">
+            <option value="mm">mm</option>
+            <option value="cm">cm</option>
+            <option value="m">m</option>
+            <option value="ft">ft</option>
+            <option value="in">in</option>
+          </select>
+        </div>
+        <div class="offset-btn-row">
+          <button class="offset-btn" onclick="startCalibration()">Calibrate</button>
+          <button class="offset-btn" onclick="clearCalibration()">Clear</button>
+        </div>
+        <div class="offset-hint">Draw a line of known length, then enter its real-world distance. Measure (M) and Dimension (D) tools will show calibrated units.</div>
+      </div>
+    </div>
+    <div class="control-group">
       <div class="section-title">Save / Load</div>
       <div class="save-row">
         <button class="save-btn primary" onclick="savePreset()">💾 Save Preset</button>
@@ -288,6 +309,9 @@
     <button class="draw-tool-btn" id="draw-tool-rect" onclick="setDrawTool('rect')" title="Rectangle (R)">▭</button>
     <button class="draw-tool-btn" id="draw-tool-text" onclick="setDrawTool('text')" title="Text (T)">T</button>
     <button class="draw-tool-btn" id="draw-tool-eraser" onclick="setDrawTool('eraser')" title="Eraser (E)">⌫</button>
+    <span class="draw-sep"></span>
+    <button class="draw-tool-btn" id="draw-tool-measure" onclick="setDrawTool('measure')" title="Measure (M)">⤧</button>
+    <button class="draw-tool-btn" id="draw-tool-dimension" onclick="setDrawTool('dimension')" title="Dimension (D)">↔</button>
     <span class="draw-sep"></span>
     <input type="color" class="draw-color-pick" id="draw-color" value="#ff1744" title="Stroke color" />
     <span class="draw-group-label">Size</span>

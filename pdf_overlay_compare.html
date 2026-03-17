@@ -960,6 +960,27 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       <div class="offset-hint">All transforms stored per page.</div>
     </div>
     <div class="control-group">
+      <div class="section-title">Measurement Calibration</div>
+      <div class="align3-status" id="calib-status">Not calibrated (showing px)</div>
+      <div class="offset-wrap">
+        <div class="offset-axis-header">
+          <span class="offset-label">Unit</span>
+          <select class="draw-width-pick" id="calib-unit" style="width:auto;padding:3px 8px;">
+            <option value="mm">mm</option>
+            <option value="cm">cm</option>
+            <option value="m">m</option>
+            <option value="ft">ft</option>
+            <option value="in">in</option>
+          </select>
+        </div>
+        <div class="offset-btn-row">
+          <button class="offset-btn" onclick="startCalibration()">Calibrate</button>
+          <button class="offset-btn" onclick="clearCalibration()">Clear</button>
+        </div>
+        <div class="offset-hint">Draw a line of known length, then enter its real-world distance. Measure (M) and Dimension (D) tools will show calibrated units.</div>
+      </div>
+    </div>
+    <div class="control-group">
       <div class="section-title">Save / Load</div>
       <div class="save-row">
         <button class="save-btn primary" onclick="savePreset()">💾 Save Preset</button>
@@ -1077,6 +1098,9 @@ https://github.com/nodeca/pako/blob/main/LICENSE
     <button class="draw-tool-btn" id="draw-tool-text" onclick="setDrawTool('text')" title="Text (T)">T</button>
     <button class="draw-tool-btn" id="draw-tool-eraser" onclick="setDrawTool('eraser')" title="Eraser (E)">⌫</button>
     <span class="draw-sep"></span>
+    <button class="draw-tool-btn" id="draw-tool-measure" onclick="setDrawTool('measure')" title="Measure (M)">⤧</button>
+    <button class="draw-tool-btn" id="draw-tool-dimension" onclick="setDrawTool('dimension')" title="Dimension (D)">↔</button>
+    <span class="draw-sep"></span>
     <input type="color" class="draw-color-pick" id="draw-color" value="#ff1744" title="Stroke color" />
     <span class="draw-group-label">Size</span>
     <input type="range" class="draw-slider" id="draw-width" min="1" max="20" value="2" oninput="updateDrawWidth()" title="Stroke width" />
@@ -1180,6 +1204,8 @@ const DOM = {
   align3Status: $('align3-status'), align3Start: $('align3-start'),
   align3Clear: $('align3-clear'), align3Points: $('align3-points'),
   align3Overlay: $('align3-overlay'),
+  // Calibration
+  calibStatus: $('calib-status'), calibUnit: $('calib-unit'),
 };
 
 // ═══════════════════════════════════════
@@ -1228,9 +1254,16 @@ let _compositeScheduled = false;
 let _sbsSyncLock = false; // prevents scroll-sync infinite loop
 
 // Drawing state
-let drawTool = 'pan'; // 'pan' | 'pen' | 'line' | 'arrow' | 'rect' | 'text'
+let drawTool = 'pan'; // 'pan' | 'pen' | 'line' | 'arrow' | 'rect' | 'text' | 'measure' | 'dimension'
 let drawStrokes = {}; // per-page arrays of stroke objects (single layer)
 let _drawCurrent = null; // in-progress stroke
+
+// Calibration state: pixels per real-world unit
+let calibrationPixelsPerUnit = 0; // 0 = uncalibrated
+let calibrationUnit = 'mm'; // 'mm' | 'cm' | 'm' | 'ft' | 'in'
+
+// Measure tool: last measurement result shown as on-canvas overlay
+let _measureResult = null; // { x1, y1, x2, y2, distPx, distReal, unit } or null
 
 // Blend mode state
 let blendMode = 'multiply'; // 'multiply' | 'alpha'
@@ -1369,6 +1402,9 @@ function applyDefaults(d) {
   DOM.inputScaleNew.value = d.scaleNew || 100;
   DOM.sliderScaleOld.value = Math.max(25, Math.min(200, d.scaleOld || 100));
   DOM.sliderScaleNew.value = Math.max(25, Math.min(200, d.scaleNew || 100));
+  if (d.calibrationPixelsPerUnit != null) calibrationPixelsPerUnit = d.calibrationPixelsPerUnit;
+  if (d.calibrationUnit) { calibrationUnit = d.calibrationUnit; DOM.calibUnit.value = calibrationUnit; }
+  updateCalibrationStatus();
   syncColors();
 }
 
@@ -1382,7 +1418,8 @@ function gatherUISettings() {
     transformScope: DOM.transformScope.value,
     thumbPPI, memLimitMB: cacheMemLimitMB,
     scaleOld: parseInt(DOM.inputScaleOld.value) || 100,
-    scaleNew: parseInt(DOM.inputScaleNew.value) || 100
+    scaleNew: parseInt(DOM.inputScaleNew.value) || 100,
+    calibrationPixelsPerUnit, calibrationUnit
   };
 }
 
@@ -1415,6 +1452,9 @@ function resetToDefaults() {
   pageScales = {};
   pageRotations = {};
   pageTransforms = {};
+  calibrationPixelsPerUnit = 0;
+  calibrationUnit = 'mm';
+  _measureResult = null;
   currentZoom = 1;
   applyDefaults(HARDCODED_DEFAULTS);
   document.querySelectorAll('.preset-pill').forEach((el, i) => el.classList.toggle('selected', i === 0));
@@ -3061,6 +3101,8 @@ window.addEventListener('keydown',e=>{
   if(e.key==='r'&&!e.ctrlKey&&!e.metaKey){setDrawTool('rect');return;}
   if(e.key==='t'&&!e.ctrlKey&&!e.metaKey){setDrawTool('text');return;}
   if(e.key==='e'&&!e.ctrlKey&&!e.metaKey){setDrawTool('eraser');return;}
+  if(e.key==='m'&&!e.ctrlKey&&!e.metaKey){setDrawTool('measure');return;}
+  if(e.key==='d'&&!e.ctrlKey&&!e.metaKey){setDrawTool('dimension');return;}
   if((e.ctrlKey||e.metaKey)&&e.key==='z'){e.preventDefault();drawUndo();return;}
   if(maxPages<=1) return;
   if(e.key==='ArrowLeft'||e.key==='PageUp'){e.preventDefault();changePage(-1);}
@@ -3082,9 +3124,76 @@ function syncDrawLayerSize(side) {
   draw.style.width = src.style.width;
   draw.style.height = src.style.height;
 }
+// ═══════════════════════════════════════
+//  CALIBRATION & MEASUREMENT
+// ═══════════════════════════════════════
+
+function pixelDistance(x1, y1, x2, y2) {
+  return Math.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2);
+}
+
+function formatMeasurement(distPx) {
+  if (calibrationPixelsPerUnit > 0) {
+    const real = distPx / calibrationPixelsPerUnit;
+    return real < 0.01 ? real.toExponential(2) + ' ' + calibrationUnit
+         : real < 10 ? real.toFixed(2) + ' ' + calibrationUnit
+         : real < 1000 ? real.toFixed(1) + ' ' + calibrationUnit
+         : real.toFixed(0) + ' ' + calibrationUnit;
+  }
+  return distPx.toFixed(1) + ' px';
+}
+
+function startCalibration() {
+  // Enter measure-like mode: user draws a line, then enters the known distance
+  setDrawTool('measure');
+  _calibratingMode = true;
+  updateCalibrationStatus();
+}
+
+let _calibratingMode = false;
+
+function finishCalibration(distPx) {
+  const knownStr = prompt('Enter the known real-world distance for this segment (e.g. "500"):');
+  if (!knownStr) { _calibratingMode = false; updateCalibrationStatus(); return; }
+  const known = parseFloat(knownStr);
+  if (isNaN(known) || known <= 0) { alert('Invalid distance.'); _calibratingMode = false; updateCalibrationStatus(); return; }
+  calibrationUnit = DOM.calibUnit.value;
+  calibrationPixelsPerUnit = distPx / known;
+  _calibratingMode = false;
+  _measureResult = null;
+  updateCalibrationStatus();
+  // Re-render draw layers to update any dimension labels
+  if (mode === 'overlay') renderDrawLayer('overlay');
+  else { renderDrawLayer('old'); renderDrawLayer('new'); }
+}
+
+function clearCalibration() {
+  calibrationPixelsPerUnit = 0;
+  _calibratingMode = false;
+  updateCalibrationStatus();
+  if (mode === 'overlay') renderDrawLayer('overlay');
+  else { renderDrawLayer('old'); renderDrawLayer('new'); }
+}
+
+function updateCalibrationStatus() {
+  const el = DOM.calibStatus;
+  if (!el) return;
+  if (_calibratingMode) {
+    el.textContent = 'Draw a line of known length...';
+    el.className = 'align3-status active';
+  } else if (calibrationPixelsPerUnit > 0) {
+    const ratio = (1 / calibrationPixelsPerUnit).toFixed(4);
+    el.textContent = `1 px = ${ratio} ${calibrationUnit}`;
+    el.className = 'align3-status done';
+  } else {
+    el.textContent = 'Not calibrated (showing px)';
+    el.className = 'align3-status';
+  }
+}
+
 // Cursor map per tool
 const _toolCursors = {
-  pan: 'grab', pen: 'crosshair', line: 'crosshair', arrow: 'crosshair',
+  pan: 'grab', pen: 'crosshair', line: 'crosshair', arrow: 'crosshair', measure: 'crosshair', dimension: 'crosshair',
   highlight: 'url("data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' width=\'24\' height=\'24\' viewBox=\'0 0 24 24\'%3E%3Crect x=\'5\' y=\'8\' width=\'14\' height=\'8\' fill=\'%23ffeb3b\' opacity=\'0.5\' rx=\'1\'/%3E%3C/svg%3E") 12 12, crosshair',
   rect: 'crosshair',
   text: 'text',
@@ -3093,7 +3202,13 @@ const _toolCursors = {
 
 function setDrawTool(tool) {
   drawTool = tool;
-  ['pan','pen','line','arrow','highlight','rect','text','eraser'].forEach(t => {
+  // Clear measure overlay when switching away from measure
+  if (tool !== 'measure' && _measureResult) {
+    _measureResult = null;
+    if (mode === 'overlay') renderDrawLayer('overlay');
+    else { renderDrawLayer('old'); renderDrawLayer('new'); }
+  }
+  ['pan','pen','line','arrow','highlight','rect','text','eraser','measure','dimension'].forEach(t => {
     const btn = document.getElementById('draw-tool-' + t);
     if (btn) btn.classList.toggle('active', t === tool);
   });
@@ -3172,6 +3287,57 @@ function renderDrawLayer(side) {
   if (_drawCurrent) {
     drawStrokeToCtx(ctx, _drawCurrent);
   }
+  // Draw measure result overlay
+  if (_measureResult) {
+    drawMeasureOverlay(ctx, _measureResult);
+  }
+}
+
+function drawMeasureOverlay(ctx, m) {
+  ctx.save();
+  const dx = m.x2 - m.x1, dy = m.y2 - m.y1;
+  const dist = Math.sqrt(dx * dx + dy * dy);
+  if (dist < 1) { ctx.restore(); return; }
+  // Dashed line
+  ctx.strokeStyle = '#00ff88';
+  ctx.lineWidth = 2;
+  ctx.setLineDash([6, 4]);
+  ctx.beginPath();
+  ctx.moveTo(m.x1, m.y1); ctx.lineTo(m.x2, m.y2);
+  ctx.stroke();
+  ctx.setLineDash([]);
+  // Endpoint dots
+  ctx.fillStyle = '#00ff88';
+  [{ x: m.x1, y: m.y1 }, { x: m.x2, y: m.y2 }].forEach(p => {
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, 4, 0, Math.PI * 2);
+    ctx.fill();
+  });
+  // Label at midpoint
+  const label = formatMeasurement(dist);
+  const fontSize = 16;
+  ctx.font = `600 ${fontSize}px 'JetBrains Mono', monospace`;
+  const metrics = ctx.measureText(label);
+  const mx = (m.x1 + m.x2) / 2, my = (m.y1 + m.y2) / 2;
+  const angle = Math.atan2(dy, dx);
+  const offX = -Math.sin(angle) * 20;
+  const offY = Math.cos(angle) * 20;
+  const lx = mx + offX, ly = my + offY;
+  const pad = 4;
+  ctx.save();
+  ctx.translate(lx, ly);
+  let textAngle = angle;
+  if (textAngle > Math.PI / 2) textAngle -= Math.PI;
+  if (textAngle < -Math.PI / 2) textAngle += Math.PI;
+  ctx.rotate(textAngle);
+  ctx.fillStyle = 'rgba(0,0,0,0.8)';
+  ctx.fillRect(-metrics.width / 2 - pad, -fontSize / 2 - pad, metrics.width + pad * 2, fontSize + pad * 2);
+  ctx.fillStyle = '#00ff88';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(label, 0, 0);
+  ctx.restore();
+  ctx.restore();
 }
 
 function drawStrokeToCtx(ctx, s) {
@@ -3225,6 +3391,84 @@ function drawStrokeToCtx(ctx, s) {
     if (!s.x2) return;
     ctx.strokeRect(Math.min(s.x1, s.x2), Math.min(s.y1, s.y2),
                    Math.abs(s.x2 - s.x1), Math.abs(s.y2 - s.y1));
+  } else if (s.tool === 'measure') {
+    // Live preview rendered as dashed line (same as measure overlay)
+    if (!s.x2) { ctx.restore(); return; }
+    const mDist = Math.sqrt((s.x2 - s.x1) ** 2 + (s.y2 - s.y1) ** 2);
+    if (mDist < 1) { ctx.restore(); return; }
+    ctx.strokeStyle = '#00ff88'; ctx.lineWidth = 2;
+    ctx.setLineDash([6, 4]);
+    ctx.beginPath(); ctx.moveTo(s.x1, s.y1); ctx.lineTo(s.x2, s.y2); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = '#00ff88';
+    [{x:s.x1,y:s.y1},{x:s.x2,y:s.y2}].forEach(p => { ctx.beginPath(); ctx.arc(p.x,p.y,4,0,Math.PI*2); ctx.fill(); });
+    const mLabel = formatMeasurement(mDist);
+    const mFontSize = 16;
+    ctx.font = `600 ${mFontSize}px 'JetBrains Mono', monospace`;
+    const mMetrics = ctx.measureText(mLabel);
+    const mAngle = Math.atan2(s.y2-s.y1, s.x2-s.x1);
+    const mmx = (s.x1+s.x2)/2 - Math.sin(mAngle)*20;
+    const mmy = (s.y1+s.y2)/2 + Math.cos(mAngle)*20;
+    ctx.save();
+    ctx.translate(mmx, mmy);
+    let mtAngle = mAngle;
+    if (mtAngle > Math.PI/2) mtAngle -= Math.PI;
+    if (mtAngle < -Math.PI/2) mtAngle += Math.PI;
+    ctx.rotate(mtAngle);
+    ctx.fillStyle = 'rgba(0,0,0,0.8)';
+    ctx.fillRect(-mMetrics.width/2-4, -mFontSize/2-4, mMetrics.width+8, mFontSize+8);
+    ctx.fillStyle = '#00ff88';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(mLabel, 0, 0);
+    ctx.restore();
+    ctx.restore();
+    return;
+  } else if (s.tool === 'dimension') {
+    if (!s.x2) { ctx.restore(); return; }
+    const dx = s.x2 - s.x1, dy = s.y2 - s.y1;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+    if (dist < 1) { ctx.restore(); return; }
+    const angle = Math.atan2(dy, dx);
+    const tickLen = Math.max(8, s.width * 4);
+    const perpX = -Math.sin(angle) * tickLen;
+    const perpY = Math.cos(angle) * tickLen;
+    // Main line
+    ctx.beginPath();
+    ctx.moveTo(s.x1, s.y1); ctx.lineTo(s.x2, s.y2);
+    ctx.stroke();
+    // Tick marks at endpoints
+    ctx.beginPath();
+    ctx.moveTo(s.x1 - perpX, s.y1 - perpY);
+    ctx.lineTo(s.x1 + perpX, s.y1 + perpY);
+    ctx.moveTo(s.x2 - perpX, s.y2 - perpY);
+    ctx.lineTo(s.x2 + perpX, s.y2 + perpY);
+    ctx.stroke();
+    // Label
+    const label = formatMeasurement(dist);
+    const fontSize = Math.max(12, s.width * 4);
+    ctx.font = `600 ${fontSize}px 'JetBrains Mono', monospace`;
+    const metrics = ctx.measureText(label);
+    const mx = (s.x1 + s.x2) / 2, my = (s.y1 + s.y2) / 2;
+    // Offset label perpendicular to the line
+    const labelOffX = -Math.sin(angle) * (tickLen + fontSize * 0.5);
+    const labelOffY = Math.cos(angle) * (tickLen + fontSize * 0.5);
+    const lx = mx + labelOffX, ly = my + labelOffY;
+    // Background pill behind text
+    const pad = 3;
+    ctx.save();
+    ctx.translate(lx, ly);
+    // Rotate text to align with line (keep readable)
+    let textAngle = angle;
+    if (textAngle > Math.PI / 2) textAngle -= Math.PI;
+    if (textAngle < -Math.PI / 2) textAngle += Math.PI;
+    ctx.rotate(textAngle);
+    ctx.fillStyle = 'rgba(0,0,0,0.7)';
+    ctx.fillRect(-metrics.width / 2 - pad, -fontSize / 2 - pad, metrics.width + pad * 2, fontSize + pad * 2);
+    ctx.fillStyle = '#fff';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(label, 0, 0);
+    ctx.restore();
   } else if (s.tool === 'text') {
     const fontSize = s.textSize || Math.max(14, s.width * 6);
     ctx.font = `${fontSize}px 'DM Sans', sans-serif`;
@@ -3240,7 +3484,7 @@ function strokeHitsPoint(s, px, py, radius) {
     for (const pt of s.pts) {
       if ((pt.x - px) ** 2 + (pt.y - py) ** 2 < r2) return true;
     }
-  } else if (s.tool === 'line' || s.tool === 'arrow') {
+  } else if (s.tool === 'line' || s.tool === 'arrow' || s.tool === 'dimension') {
     if (distToSegment2(px, py, s.x1, s.y1, s.x2, s.y2) < r2) return true;
   } else if (s.tool === 'rect') {
     const x1 = Math.min(s.x1, s.x2), y1 = Math.min(s.y1, s.y2);
@@ -3321,6 +3565,13 @@ function initDrawing() {
         return;
       }
 
+      if (drawTool === 'measure') {
+        drawing = true;
+        _measureResult = null;
+        _drawCurrent = { tool: 'measure', x1: pos.x, y1: pos.y, x2: null, y2: null, color: '#00ff88', width: 2 };
+        return;
+      }
+
       drawing = true;
       if (drawTool === 'pen' || drawTool === 'highlight') {
         _drawCurrent = { tool: drawTool, pts: [pos], color, width };
@@ -3364,8 +3615,20 @@ function initDrawing() {
     const s = _drawCurrent;
     let valid = false;
     if ((s.tool === 'pen' || s.tool === 'highlight') && s.pts && s.pts.length >= 2) valid = true;
-    if ((s.tool === 'line' || s.tool === 'arrow' || s.tool === 'rect') && s.x2 != null) valid = true;
+    if ((s.tool === 'line' || s.tool === 'arrow' || s.tool === 'rect' || s.tool === 'dimension') && s.x2 != null) valid = true;
     if (s.tool === 'eraser') valid = false;
+    // Measure tool: show result overlay, don't save as stroke
+    if (s.tool === 'measure' && s.x2 != null) {
+      const distPx = pixelDistance(s.x1, s.y1, s.x2, s.y2);
+      _measureResult = { x1: s.x1, y1: s.y1, x2: s.x2, y2: s.y2 };
+      if (_calibratingMode) {
+        _drawCurrent = null; drawSide = null;
+        finishCalibration(distPx);
+        renderAllDrawLayers();
+        return;
+      }
+      valid = false;
+    }
     if (valid) {
       const saved = { ...s };
       if (saved.pts) saved.pts = saved.pts.map(p => ({...p}));
