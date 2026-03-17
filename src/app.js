@@ -1932,102 +1932,117 @@ function snapAffineRotation(t, srcPts, dstPts) {
 }
 
 function computeAndApplyAlign3() {
-  // We want: where should we place the NEW image so that its points match the OLD image's points?
-  // The old image stays fixed. We need a transform T such that T(newPt[i]) = oldPt[i]
-  // i.e., new PDF pixels → position on the composite canvas matching old PDF coordinates
+  // We want a stored affine that maps rawNewPx → oldCanvasPos (before shift).
+  // composite() uses: ctx.setTransform(xform...) then drawImage(newImg, 0, 0),
+  // so the stored affine must map raw pixel coords directly.
 
-  let newPts = align3PointsNew;
-  let oldPts = align3PointsOld;
-
-  // If there's already an affine transform on this page (e.g. from a global alignment),
-  // the new image is displayed through that transform. Click coordinates are in post-transform
-  // canvas space, but solveAffine + sN baking expects new points at sN * rawPixel positions.
-  // Fix: inverse-map new click points back to raw pixel coords, then scale by sN.
   const existingXform = getPageTransform(currentPage);
-  if (existingXform && rawOld && rawNew) {
-    const ps0 = getPageScale(currentPage);
-    const sO0 = ps0.old / 100;
-    const wO0 = rawOld.width * sO0, hO0 = rawOld.height * sO0;
-    const sN0 = ps0.new / 100;
+  const ps = getPageScale(currentPage);
+  const sO = ps.old / 100;
+  const sN = ps.new / 100;
+  let transform;
 
+  if (existingXform && rawOld && rawNew) {
+    // ── SECOND+ ALIGNMENT (existing affine) ──
+    // Both old and new clicks are in canvas coords. Remove the canvas shift,
+    // then solve a correction affine and compose it with the existing one.
+
+    const wO0 = rawOld.width * sO, hO0 = rawOld.height * sO;
     // Recompute canvas shift (same logic as composite's affine branch)
     const corners = [[0,0],[rawNew.width,0],[0,rawNew.height],[rawNew.width,rawNew.height]];
     let minX = 0, minY = 0, maxX = wO0, maxY = hO0;
     corners.forEach(([px, py]) => {
-      const cx = existingXform.a * px + existingXform.b * py + existingXform.e;
-      const cy = existingXform.c * px + existingXform.d * py + existingXform.f;
-      maxX = Math.max(maxX, cx); maxY = Math.max(maxY, cy);
-      minX = Math.min(minX, cx); minY = Math.min(minY, cy);
+      const cx2 = existingXform.a * px + existingXform.b * py + existingXform.e;
+      const cy2 = existingXform.c * px + existingXform.d * py + existingXform.f;
+      maxX = Math.max(maxX, cx2); maxY = Math.max(maxY, cy2);
+      minX = Math.min(minX, cx2); minY = Math.min(minY, cy2);
     });
     const shiftX = minX < 0 ? -minX : 0;
     const shiftY = minY < 0 ? -minY : 0;
 
-    // Invert existing xform's linear part to recover raw pixel coords from canvas coords
-    const det = existingXform.a * existingXform.d - existingXform.b * existingXform.c;
-    if (Math.abs(det) > 1e-10) {
-      newPts = align3PointsNew.map(pt => {
-        // Remove canvas shift to get xform-output coords
-        const nx = pt.x - shiftX;
-        const ny = pt.y - shiftY;
-        // Invert xform to get raw new-image pixel coords
-        const rawPx = (existingXform.d * (nx - existingXform.e) - existingXform.b * (ny - existingXform.f)) / det;
-        const rawPy = (-existingXform.c * (nx - existingXform.e) + existingXform.a * (ny - existingXform.f)) / det;
-        // Scale to sN * rawPixel (same space as first-time alignment)
-        return { x: rawPx * sN0, y: rawPy * sN0 };
-      });
-      // Remove canvas shift from old points so shift isn't double-counted
-      oldPts = align3PointsOld.map(pt => ({
-        x: pt.x - shiftX,
-        y: pt.y - shiftY
-      }));
+    // Remove canvas shift from both point sets
+    const adjNew = align3PointsNew.map(pt => ({ x: pt.x - shiftX, y: pt.y - shiftY }));
+    const adjOld = align3PointsOld.map(pt => ({ x: pt.x - shiftX, y: pt.y - shiftY }));
+
+    // Solve correction: maps new-canvas-pos → old-canvas-pos
+    const correction = solveAffine(adjNew, adjOld);
+    if (!correction) {
+      alert('Points are collinear — pick non-collinear points.');
+      cancelAlign3();
+      return;
     }
+
+    // Compose: final = correction ∘ existingXform
+    // final(rawPx) = correction(existingXform(rawPx)) = oldCanvasPos
+    const E = existingXform, C = correction;
+    transform = {
+      a: C.a * E.a + C.b * E.c,
+      b: C.a * E.b + C.b * E.d,
+      c: C.c * E.a + C.d * E.c,
+      d: C.c * E.b + C.d * E.d,
+      e: C.a * E.e + C.b * E.f + C.e,
+      f: C.c * E.e + C.d * E.f + C.f
+    };
+
+    // Snap small rotations: compute raw pixel coords for centroid matching
+    const det = E.a * E.d - E.b * E.c;
+    if (Math.abs(det) > 1e-10) {
+      const rawNewPts = adjNew.map(pt => {
+        const px = (E.d * (pt.x - E.e) - E.b * (pt.y - E.f)) / det;
+        const py = (-E.c * (pt.x - E.e) + E.a * (pt.y - E.f)) / det;
+        return { x: px, y: py };
+      });
+      transform = snapAffineRotation(transform, rawNewPts, adjOld);
+    }
+
+    // No baking needed — the composed affine already maps rawPx → canvas pos
+  } else {
+    // ── FIRST ALIGNMENT (no existing affine) ──
+    // In the standard composite path, new is drawn at sN * rawPx + offset.
+    // solveAffine maps click coords, then we bake sN so stored affine maps rawPx.
+    let newPts = align3PointsNew;
+    let oldPts = align3PointsOld;
+
+    transform = solveAffine(newPts, oldPts);
+    if (!transform) {
+      alert('Points are collinear — pick non-collinear points.');
+      cancelAlign3();
+      return;
+    }
+
+    // Snap tiny rotations (<1°) caused by imprecise clicking
+    transform = snapAffineRotation(transform, newPts, oldPts);
+
+    // Pre-bake sN into the linear components so the stored affine maps
+    // raw image pixels → canvas coords. composite() applies it directly.
+    transform.a *= sN;
+    transform.b *= sN;
+    transform.c *= sN;
+    transform.d *= sN;
   }
 
-  let transform = solveAffine(newPts, oldPts);
-  if (!transform) {
-    alert('Points are collinear — pick non-collinear points.');
-    cancelAlign3();
-    return;
-  }
-
-  // Snap tiny rotations (<1°) caused by imprecise clicking
-  transform = snapAffineRotation(transform, newPts, oldPts);
-
-  // The affine was computed in output-canvas pixel coordinates, where the new image
-  // was drawn at scale sN (pageScales.new/100). The linear part of the affine maps
-  // (newCanvasX, newCanvasY) → (oldCanvasX, oldCanvasY), so it implicitly includes sN.
-  // Decompose BEFORE baking sN into the affine, so UI values reflect the transform only.
+  // ── Decompose for UI display ──
+  // The stored affine maps rawPx → canvas. Extract rotation, scale, offset.
   const rotRad = Math.atan2(transform.c, transform.a);
   const rotDeg = Math.round(rotRad * 180 / Math.PI * 100) / 100;
-  const sx = Math.sqrt(transform.a * transform.a + transform.c * transform.c);
-  const sy = Math.sqrt(transform.b * transform.b + transform.d * transform.d);
-  let uniformScale = (sx + sy) / 2;
-  if (Math.abs(uniformScale - 1) < 0.01) uniformScale = 1;
-  const ps = getPageScale(currentPage);
-  const sN = ps.new / 100;
-  const scaleNewPercent = Math.round(ps.new * uniformScale * 10) / 10;
-  // Compute display offset from affine translation
-  const sN_new = sN * uniformScale;
+  const effSx = Math.sqrt(transform.a * transform.a + transform.c * transform.c);
+  const effSy = Math.sqrt(transform.b * transform.b + transform.d * transform.d);
+  // effSx includes sN baked in, so display scale = effSx * 100 (percentage of raw)
+  let scaleNewPercent = Math.round((effSx + effSy) / 2 * 100 * 10) / 10;
+  if (Math.abs(scaleNewPercent - Math.round(scaleNewPercent)) < 0.5) scaleNewPercent = Math.round(scaleNewPercent);
+  // Compute display offset from affine translation (rotation around image center)
   const imgW = rawNew.width, imgH = rawNew.height;
-  const wN_new = imgW * sN_new, hN_new = imgH * sN_new;
+  const effScale = (effSx + effSy) / 2;
+  const wN_eff = imgW * effScale, hN_eff = imgH * effScale;
   const cosR = Math.cos(rotRad), sinR = Math.sin(rotRad);
-  const cx = wN_new / 2, cy = hN_new / 2;
-  const dispOx = Math.round((transform.e + cosR * cx - sinR * cy - cx) * 10) / 10;
-  const dispOy = Math.round((transform.f + sinR * cx + cosR * cy - cy) * 10) / 10;
-
-  // Pre-bake sN into the affine's linear components so the stored affine maps
-  // directly from raw image pixels to output canvas coords. This way composite()
-  // doesn't need to multiply by sN again (which would double-apply the scale).
-  transform.a *= sN;
-  transform.b *= sN;
-  transform.c *= sN;
-  transform.d *= sN;
+  const cxN = wN_eff / 2, cyN = hN_eff / 2;
+  const dispOx = Math.round((transform.e + cosR * cxN - sinR * cyN - cxN) * 10) / 10;
+  const dispOy = Math.round((transform.f + sinR * cxN + cosR * cyN - cyN) * 10) / 10;
 
   const scope = DOM.transformScope.value;
   if (scope === 'all') {
     for (let p = 1; p <= maxPages; p++) {
       setPageTransform(p, { ...transform });
-      // Store decomposed values for UI display
       setPageOffset(p, dispOx, dispOy);
       setPageRotation(p, rotDeg);
       setPageScale(p, ps.old, scaleNewPercent);
