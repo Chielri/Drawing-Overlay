@@ -298,8 +298,9 @@
   }
   .overlay-draw-layer.drawing { pointer-events: auto; cursor: crosshair; }
   .overlay-xhair-canvas {
-    position: absolute; top: 0; left: 0; width: 100%; height: 100%;
-    pointer-events: none; z-index: 4;
+    position: sticky; top: 0; left: 0; width: 100%; height: 0;
+    pointer-events: none; z-index: 14;
+    display: block;
   }
   .alpha-main-row { display: flex; align-items: center; gap: 6px; }
   .align3-overlay {

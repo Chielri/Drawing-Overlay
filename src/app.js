@@ -1362,11 +1362,12 @@ async function exportAllPNG() {
   area.addEventListener('mousedown',e=>{
     if(e.target.closest('.zoom-bar')||e.target.closest('.sbs-wrapper'))return;
     if(e.button!==1&&drawTool!=='pan')return; // left-click only in pan mode, middle-click always
-    drag=true;area.classList.add('dragging');sx=e.clientX;sy=e.clientY;sl=area.scrollLeft;st=area.scrollTop;e.preventDefault();
+    drag=true;_isDragging=true;area.classList.add('dragging');sx=e.clientX;sy=e.clientY;sl=area.scrollLeft;st=area.scrollTop;e.preventDefault();
+    clearXhair(DOM.overlayXhair);
   });
   area.addEventListener('auxclick',e=>{if(e.button===1)e.preventDefault();}); // prevent middle-click autoscroll
   window.addEventListener('mousemove',e=>{if(!drag)return;area.scrollLeft=sl-(e.clientX-sx);area.scrollTop=st-(e.clientY-sy);});
-  window.addEventListener('mouseup',()=>{if(!drag)return;drag=false;area.classList.remove('dragging');});
+  window.addEventListener('mouseup',()=>{if(!drag)return;drag=false;_isDragging=false;area.classList.remove('dragging');});
   area.addEventListener('wheel',e=>{
     if(mode==='sidebyside')return; // SBS has its own zoom
     if(!DOM.canvasOutput.width)return;e.preventDefault();
@@ -1398,9 +1399,10 @@ async function exportAllPNG() {
     let drag=false, sx, sy, sl, st;
     pane.addEventListener('mousedown', e => {
       if(e.button!==1&&drawTool!=='pan') return; // left-click only in pan mode, middle-click always
-      drag=true; pane.classList.add('dragging');
+      drag=true; _isDragging=true; pane.classList.add('dragging');
       sx=e.clientX; sy=e.clientY; sl=pane.scrollLeft; st=pane.scrollTop;
       e.preventDefault();
+      clearXhair(DOM.sbsXhairOld); clearXhair(DOM.sbsXhairNew);
     });
     pane.addEventListener('auxclick', e=>{if(e.button===1)e.preventDefault();}); // prevent middle-click autoscroll
     window.addEventListener('mousemove', e => {
@@ -1409,7 +1411,7 @@ async function exportAllPNG() {
       pane.scrollTop = st-(e.clientY-sy);
     });
     window.addEventListener('mouseup', () => {
-      if(!drag) return; drag=false; pane.classList.remove('dragging');
+      if(!drag) return; drag=false; _isDragging=false; pane.classList.remove('dragging');
     });
   }
   initPaneDrag(sO);
@@ -1439,27 +1441,28 @@ async function exportAllPNG() {
   sO.addEventListener('mousemove', e => {
     if (!xhairEnabled) return;
     const pos = paneMousePos(sO, e);
-    drawXhair(DOM.sbsXhairOld, pos.x, pos.y);
-    drawXhair(DOM.sbsXhairNew, pos.x, pos.y);
+    const w = sO.clientWidth, h = sO.clientHeight;
+    drawXhair(DOM.sbsXhairOld, pos.x, pos.y, w, h);
+    drawXhair(DOM.sbsXhairNew, pos.x, pos.y, sN.clientWidth, sN.clientHeight);
   });
   sN.addEventListener('mousemove', e => {
     if (!xhairEnabled) return;
     const pos = paneMousePos(sN, e);
-    drawXhair(DOM.sbsXhairOld, pos.x, pos.y);
-    drawXhair(DOM.sbsXhairNew, pos.x, pos.y);
+    const w = sN.clientWidth, h = sN.clientHeight;
+    drawXhair(DOM.sbsXhairOld, pos.x, pos.y, sO.clientWidth, sO.clientHeight);
+    drawXhair(DOM.sbsXhairNew, pos.x, pos.y, w, h);
   });
   sO.addEventListener('mouseleave', () => { clearXhair(DOM.sbsXhairOld); clearXhair(DOM.sbsXhairNew); });
   sN.addEventListener('mouseleave', () => { clearXhair(DOM.sbsXhairOld); clearXhair(DOM.sbsXhairNew); });
 
-  // Overlay mode crosshair
+  // Overlay mode crosshair — uses canvasArea viewport dimensions (not zoomed container)
   DOM.canvasArea.addEventListener('mousemove', e => {
     if (!xhairEnabled || mode !== 'overlay') return;
-    const container = DOM.canvasContainer;
-    if (container.style.display === 'none') return;
-    const rect = container.getBoundingClientRect();
+    if (DOM.canvasContainer.style.display === 'none') return;
+    const rect = DOM.canvasArea.getBoundingClientRect();
     const x = e.clientX - rect.left, y = e.clientY - rect.top;
     if (x < 0 || y < 0 || x > rect.width || y > rect.height) { clearXhair(DOM.overlayXhair); return; }
-    drawXhair(DOM.overlayXhair, x, y);
+    drawXhair(DOM.overlayXhair, x, y, Math.round(rect.width), Math.round(rect.height));
   });
   DOM.canvasArea.addEventListener('mouseleave', () => { clearXhair(DOM.overlayXhair); });
 })();
@@ -1467,14 +1470,12 @@ async function exportAllPNG() {
 // ── Crosshair drawing utilities (global scope) ──
 let _xhairRAF = 0;
 let _xhairPending = null;
+let _isDragging = false; // set by drag-to-pan handlers to suppress crosshair
 
-function resizeXhair(canvas, w, h) {
+function _drawXhairImmediate(canvas, x, y, w, h) {
   if (canvas.width !== w || canvas.height !== h) {
     canvas.width = w; canvas.height = h;
   }
-}
-function _drawXhairImmediate(canvas, x, y, w, h) {
-  resizeXhair(canvas, w, h);
   const ctx = canvas.getContext('2d');
   ctx.clearRect(0, 0, w, h);
   if (x < 0) return;
@@ -1502,11 +1503,9 @@ function _drawXhairImmediate(canvas, x, y, w, h) {
   ctx.fillStyle = color;
   ctx.beginPath(); ctx.arc(x, y, dotR, 0, Math.PI * 2); ctx.fill();
 }
-function drawXhair(canvas, x, y) {
-  // Use viewport dimensions for crosshair canvas (not full zoomed size)
-  const pane = canvas.parentElement;
-  const w = pane.clientWidth, h = pane.clientHeight;
-  // Throttle via RAF to avoid excessive redraws during pan/zoom
+function drawXhair(canvas, x, y, w, h) {
+  if (_isDragging) return; // skip during pan drag
+  // Throttle via RAF — at most one redraw per frame
   if (!_xhairRAF) {
     _xhairRAF = requestAnimationFrame(() => {
       _xhairRAF = 0;
@@ -1517,7 +1516,6 @@ function drawXhair(canvas, x, y) {
     });
   }
   if (!_xhairPending) _xhairPending = [];
-  // Replace any pending draw for same canvas
   const idx = _xhairPending.findIndex(p => p.canvas === canvas);
   if (idx >= 0) _xhairPending[idx] = { canvas, x, y, w, h };
   else _xhairPending.push({ canvas, x, y, w, h });
