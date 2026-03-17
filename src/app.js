@@ -267,8 +267,8 @@ function gatherUISettings() {
     offsetRange: parseInt(DOM.offsetRange.value) || 500,
     transformScope: DOM.transformScope.value,
     thumbPPI, memLimitMB: cacheMemLimitMB,
-    scaleOld: parseInt(DOM.inputScaleOld.value) || 100,
-    scaleNew: parseInt(DOM.inputScaleNew.value) || 100
+    scaleOld: parseFloat(DOM.inputScaleOld.value) || 100,
+    scaleNew: parseFloat(DOM.inputScaleNew.value) || 100
   };
 }
 
@@ -719,11 +719,13 @@ function composite(w, h, imgO, imgN) {
 
     if (xform) {
       // Affine transform mode: old stays fixed, new is transformed
+      // The stored affine already has sN baked into its linear components (a,b,c,d),
+      // so we apply it directly without multiplying by sN again.
       const corners = [[0,0],[imgN.width,0],[0,imgN.height],[imgN.width,imgN.height]];
       let minX=0, minY=0, maxX=wO, maxY=hO;
       corners.forEach(([px,py]) => {
-        const cx = xform.a*sN*px + xform.b*sN*py + xform.e;
-        const cy = xform.c*sN*px + xform.d*sN*py + xform.f;
+        const cx = xform.a*px + xform.b*py + xform.e;
+        const cy = xform.c*px + xform.d*py + xform.f;
         maxX = Math.max(maxX, cx); maxY = Math.max(maxY, cy);
         minX = Math.min(minX, cx); minY = Math.min(minY, cy);
       });
@@ -742,7 +744,7 @@ function composite(w, h, imgO, imgN) {
       const drawNewLayer = () => {
         if (imgN && visNew) {
           ctx.globalAlpha = aN; ctx.save();
-          ctx.setTransform(xform.a * sN, xform.c * sN, xform.b * sN, xform.d * sN, xform.e + shiftX, xform.f + shiftY);
+          ctx.setTransform(xform.a, xform.c, xform.b, xform.d, xform.e + shiftX, xform.f + shiftY);
           ctx.drawImage(putImgToTempCanvas(imgN, _tmpCanvasB, _tmpCtxB), 0, 0);
           ctx.restore();
         }
@@ -886,15 +888,15 @@ function sliderScale() {
   _applyScale();
 }
 function inputScale() {
-  const sO = Math.max(10, Math.min(500, parseInt(DOM.inputScaleOld.value) || 100));
-  const sN = Math.max(10, Math.min(500, parseInt(DOM.inputScaleNew.value) || 100));
+  const sO = Math.max(10, Math.min(500, parseFloat(DOM.inputScaleOld.value) || 100));
+  const sN = Math.max(10, Math.min(500, parseFloat(DOM.inputScaleNew.value) || 100));
   DOM.sliderScaleOld.value = Math.max(25, Math.min(200, sO));
   DOM.sliderScaleNew.value = Math.max(25, Math.min(200, sN));
   _applyScale();
 }
 function _applyScale() {
-  const sO = parseInt(DOM.inputScaleOld.value) || 100;
-  const sN = parseInt(DOM.inputScaleNew.value) || 100;
+  const sO = parseFloat(DOM.inputScaleOld.value) || 100;
+  const sN = parseFloat(DOM.inputScaleNew.value) || 100;
   if (DOM.transformScope.value === 'all') {
     for (let p = 1; p <= maxPages; p++) { clearPageTransform(p); setPageScale(p, sO, sN); }
   } else {
@@ -912,7 +914,7 @@ function resetScale() {
   if (rawOld || rawNew) recolorAndComposite();
 }
 function matchScale() {
-  const sN = parseInt(DOM.inputScaleNew.value) || 100;
+  const sN = parseFloat(DOM.inputScaleNew.value) || 100;
   if (DOM.transformScope.value === 'all') {
     for (let p = 1; p <= maxPages; p++) { const s = getPageScale(p); setPageScale(p, sN, s.new); }
   } else {
@@ -1092,7 +1094,7 @@ function loadTransformUI() {
 // Legacy alias — many call sites use loadOffsetUI
 function loadOffsetUI() { loadTransformUI(); }
 function syncSliders() {
-  const x=parseInt(DOM.offsetX.value)||0, y=parseInt(DOM.offsetY.value)||0;
+  const x=parseFloat(DOM.offsetX.value)||0, y=parseFloat(DOM.offsetY.value)||0;
   DOM.offsetXSlider.value = Math.max(parseInt(DOM.offsetXSlider.min),Math.min(parseInt(DOM.offsetXSlider.max),x));
   DOM.offsetYSlider.value = Math.max(parseInt(DOM.offsetYSlider.min),Math.min(parseInt(DOM.offsetYSlider.max),y));
 }
@@ -1109,7 +1111,7 @@ function updateSliderRange() {
   syncSliders();
 }
 function applyOffset() {
-  const x=parseInt(DOM.offsetX.value)||0, y=parseInt(DOM.offsetY.value)||0;
+  const x=parseFloat(DOM.offsetX.value)||0, y=parseFloat(DOM.offsetY.value)||0;
   syncSliders();
   // Clear affine transform so manual offset takes effect via standard path
   if (DOM.transformScope.value==='all') { for(let p=1;p<=maxPages;p++) { clearPageTransform(p); setPageOffset(p,x,y); } }
@@ -1880,8 +1882,10 @@ function computeAndApplyAlign3() {
   // Snap tiny rotations (<1°) caused by imprecise clicking
   transform = snapAffineRotation(transform, align3PointsNew, align3PointsOld);
 
-  // Store the raw affine transform — the affine composite path uses this directly
-  // Also decompose for UI display (offset/scale/rotation fields)
+  // The affine was computed in output-canvas pixel coordinates, where the new image
+  // was drawn at scale sN (pageScales.new/100). The linear part of the affine maps
+  // (newCanvasX, newCanvasY) → (oldCanvasX, oldCanvasY), so it implicitly includes sN.
+  // Decompose BEFORE baking sN into the affine, so UI values reflect the transform only.
   const rotRad = Math.atan2(transform.c, transform.a);
   const rotDeg = Math.round(rotRad * 180 / Math.PI * 100) / 100;
   const sx = Math.sqrt(transform.a * transform.a + transform.c * transform.c);
@@ -1899,6 +1903,14 @@ function computeAndApplyAlign3() {
   const cx = wN_new / 2, cy = hN_new / 2;
   const dispOx = Math.round((transform.e + cosR * cx - sinR * cy - cx) * 10) / 10;
   const dispOy = Math.round((transform.f + sinR * cx + cosR * cy - cy) * 10) / 10;
+
+  // Pre-bake sN into the affine's linear components so the stored affine maps
+  // directly from raw image pixels to output canvas coords. This way composite()
+  // doesn't need to multiply by sN again (which would double-apply the scale).
+  transform.a *= sN;
+  transform.b *= sN;
+  transform.c *= sN;
+  transform.d *= sN;
 
   const scope = DOM.transformScope.value;
   if (scope === 'all') {
