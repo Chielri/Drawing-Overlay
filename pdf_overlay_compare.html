@@ -858,6 +858,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         <option value="150" selected>150 PPI — Standard</option>
         <option value="200">200 PPI — High</option>
         <option value="300">300 PPI — Print Quality</option>
+        <option value="400">400 PPI — Ultra (heavy memory use)</option>
       </select>
       <div class="ppi-hint">Higher PPI = sharper but slower to render</div>
     </div>
@@ -918,6 +919,12 @@ https://github.com/nodeca/pako/blob/main/LICENSE
               <button class="offset-btn" onclick="nudgeOffset(0,-5)">↑ 5</button>
               <button class="offset-btn" onclick="nudgeOffset(0,5)">5 ↓</button>
               <button class="offset-btn" onclick="resetOffset()">Reset</button>
+            </div>
+            <div class="offset-btn-row">
+              <button class="offset-btn" onclick="nudgeOffset(-1,0)">← 1</button>
+              <button class="offset-btn" onclick="nudgeOffset(1,0)">1 →</button>
+              <button class="offset-btn" onclick="nudgeOffset(0,-1)">↑ 1</button>
+              <button class="offset-btn" onclick="nudgeOffset(0,1)">1 ↓</button>
             </div>
             <div class="offset-hint">Drag sliders for coarse, type for fine.</div>
           </div>
@@ -996,7 +1003,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           <div class="mem-est" id="mem-est"></div>
           <div style="margin-top:6px;">
             <div class="control-row"><span class="control-label" style="font-size:11px;">Memory Limit</span><span class="control-value" id="mem-limit-val">4096 MB</span></div>
-            <input type="range" id="mem-limit" min="256" max="8192" step="256" value="4096" oninput="changeMemLimit()" style="width:100%;" />
+            <div style="display:flex;align-items:center;gap:4px;"><input type="number" id="mem-limit" min="256" max="131072" step="256" value="4096" onchange="changeMemLimit()" oninput="changeMemLimit()" style="width:80px;padding:2px 4px;border:1px solid var(--border);border-radius:3px;background:var(--surface2);color:var(--text);font-family:'JetBrains Mono',monospace;font-size:11px;text-align:right;outline:none;" /><span style="font-size:10px;color:var(--text-dim);">MB (max 128 GB)</span></div>
           </div>
           <div class="cache-controls">
             <div class="cache-range-row"><span class="offset-range-label">From</span><input type="number" class="cache-range-input" id="cache-from" value="1" min="1" /><span class="offset-range-label">to</span><input type="number" class="cache-range-input" id="cache-to" value="1" min="1" /></div>
@@ -1252,7 +1259,7 @@ function debounce(fn, ms) { let t; return function(...a) { clearTimeout(t); t = 
 //  CACHE MEMORY LIMIT (incremental tracking)
 // ═══════════════════════════════════════
 function changeMemLimit() {
-  const v = Math.max(256, parseInt(DOM.memLimit.value) || 4096);
+  const v = Math.max(256, Math.min(131072, parseInt(DOM.memLimit.value) || 4096));
   cacheMemLimitMB = v;
   DOM.memLimitVal.textContent = v >= 1024 ? (v/1024).toFixed(1).replace(/\.0$/,'') + ' GB' : v + ' MB';
   let safety = lruOrder.length + 2;
