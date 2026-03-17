@@ -83,7 +83,7 @@ Edit files in `src/`, then rebuild.
 - Two reusable temp canvases (`_tmpCanvasA/B`) reduce GC pressure
 - Cache memory tracked incrementally via `_trackedCacheBytes`
 - Crosshair drawing is RAF-throttled (`_xhairRAF`) and suppressed during drag (`_isDragging`). Overlay crosshair lives in a sticky wrapper inside `canvas-area` (not `canvas-container`) so the canvas buffer stays viewport-sized regardless of zoom level
-- 3-point alignment stores raw affine in `pageTransforms` — decomposed offset/scale/rotation shown in UI but rendering uses affine path directly. Manual edits to offset/scale/rotation clear the affine and switch to standard composite path
+- 3-point alignment stores raw affine in `pageTransforms` with sN pre-baked into the linear components (a,b,c,d). This means composite() applies the affine directly without multiplying by sN again. Decomposed offset/scale/rotation shown in UI but rendering uses affine path directly. Manual edits to offset/scale/rotation clear the affine and switch to standard composite path
 - Drawing uses a single stroke list per page (`drawStrokes[pageNum]`), rendered on all visible canvases (overlay + both SBS panes)
 - Keyboard shortcuts: V=pan, P=pen, L=line, A=arrow, H=highlight, R=rect, T=text, E=eraser, Ctrl+Z=undo, Left/Right/PageUp/Down/Home/End for navigation, Escape cancels alignment
 
