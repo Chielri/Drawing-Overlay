@@ -376,9 +376,18 @@ initZone(DOM.zoneNew, $('file-new'), 'new');
 DOM.canvasArea.addEventListener('dragover', e => e.preventDefault());
 DOM.canvasArea.addEventListener('drop', e => {
   e.preventDefault();
-  const files = [...e.dataTransfer.files].filter(f => f.type==='application/pdf'||f.name.endsWith('.pdf'));
+  const allFiles = [...e.dataTransfer.files];
+  const jsonFile = allFiles.find(f => f.name.endsWith('.json'));
+  if (jsonFile) { loadPreset({ target: { files: [jsonFile] } }); return; }
+  const files = allFiles.filter(f => f.type==='application/pdf'||f.name.endsWith('.pdf'));
   if (files.length >= 2) { loadPdf(files[0],'old'); loadPdf(files[1],'new'); }
   else if (files.length === 1) { if (!pdfOld) loadPdf(files[0],'old'); else loadPdf(files[0],'new'); }
+});
+// Allow dropping JSON preset anywhere on the page (document-level fallback)
+document.addEventListener('dragover', e => { if ([...e.dataTransfer.items].some(i => i.type === 'application/json' || (i.kind === 'file'))) e.preventDefault(); });
+document.addEventListener('drop', e => {
+  const jsonFile = [...e.dataTransfer.files].find(f => f.name.endsWith('.json'));
+  if (jsonFile) { e.preventDefault(); loadPreset({ target: { files: [jsonFile] } }); }
 });
 
 async function loadPdf(file, which) {
@@ -1754,7 +1763,10 @@ function computeAndApplyAlign3() {
   const rotDeg = Math.round(rotRad * 180 / Math.PI * 100) / 100;
   const sx = Math.sqrt(transform.a * transform.a + transform.c * transform.c);
   const sy = Math.sqrt(transform.b * transform.b + transform.d * transform.d);
-  const uniformScale = (sx + sy) / 2;
+  let uniformScale = (sx + sy) / 2;
+
+  // Snap scale to 100% if change is less than 1%
+  if (Math.abs(uniformScale - 1) < 0.01) uniformScale = 1;
 
   // Compute new per-layer scale
   const ps = getPageScale(currentPage);
