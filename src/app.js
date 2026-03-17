@@ -29,7 +29,7 @@ const DOM = {
   btnPrev: $('btn-prev'), btnNext: $('btn-next'),
   cacheBar: $('cache-bar'), cacheStatus: $('cache-status'), memEst: $('mem-est'),
   cacheIndicator: $('cache-indicator'),
-  cacheFrom: $('cache-from'), cacheTo: $('cache-to'), memLimit: $('mem-limit'), memLimitVal: $('mem-limit-val'),
+  cacheFrom: $('cache-from'), cacheTo: $('cache-to'), memLimit: $('mem-limit'),
   offsetX: $('offset-x'), offsetY: $('offset-y'),
   offsetXSlider: $('offset-x-slider'), offsetYSlider: $('offset-y-slider'),
   offsetRange: $('offset-range'),
@@ -141,7 +141,6 @@ function debounce(fn, ms) { let t; return function(...a) { clearTimeout(t); t = 
 function changeMemLimit() {
   const v = Math.max(256, Math.min(131072, parseInt(DOM.memLimit.value) || 4096));
   cacheMemLimitMB = v;
-  DOM.memLimitVal.textContent = v >= 1024 ? (v/1024).toFixed(1).replace(/\.0$/,'') + ' GB' : v + ' MB';
   let safety = lruOrder.length + 2;
   while (_trackedCacheBytes > cacheMemLimitMB * 1048576 && lruOrder.length > 1 && safety-- > 0) {
     const oldest = lruOrder[0];
@@ -1276,7 +1275,18 @@ async function loadPreset(e) {
       for (let i = 1; i <= mp; i++) pageScales[String(i)] = { old: sO, new: sN };
     }
   }
-  if (p.pageTransforms) pageTransforms=p.pageTransforms;
+  if (p.pageTransforms) {
+    pageTransforms = {};
+    for (const k in p.pageTransforms) {
+      const t = p.pageTransforms[k];
+      if (t && typeof t.a === 'number' && typeof t.d === 'number' &&
+          isFinite(t.a) && isFinite(t.b) && isFinite(t.c) && isFinite(t.d) && isFinite(t.e) && isFinite(t.f)) {
+        pageTransforms[k] = { a: t.a, b: t.b, c: t.c, d: t.d, e: t.e, f: t.f };
+      } else {
+        console.warn('Preset: skipping invalid transform for page', k, t);
+      }
+    }
+  }
   if (p.pageRotations) pageRotations=p.pageRotations;
   if (p.pageOffsets) pageOffsets=p.pageOffsets;
   if (p.pdfOldB64 && p.pdfNewB64) {
@@ -1383,6 +1393,13 @@ async function canvasToSmallestImage(canvas, jpegQuality) {
   return { data: jpegData, format: 'JPEG' };
 }
 
+const JSPDF_MAX_DIM = 14400;
+function pdfPageDims(w, h) {
+  const scale = Math.min(1, JSPDF_MAX_DIM / Math.max(w, h));
+  if (scale < 1) console.warn(`PDF page ${w}×${h}px exceeds jsPDF limit of ${JSPDF_MAX_DIM}. Scaling to ${Math.round(w*scale)}×${Math.round(h*scale)} in PDF (image quality preserved).`);
+  return { pw: w * scale, ph: h * scale, scale, clamped: scale < 1 };
+}
+
 async function addCanvasImageToPdf(pdf, canvas, x, y, w, h) {
   const img = await canvasToSmallestImage(canvas, getJpegQuality());
   pdf.addImage(img.data, img.format, x, y, w, h, undefined, 'FAST');
@@ -1392,46 +1409,55 @@ async function addCanvasImageToPdf(pdf, canvas, x, y, w, h) {
 async function exportPDF() {
   const out=DOM.canvasOutput; if(!out.width) return alert('Nothing to export.');
   if (!await _ensureJsPDF()) return;
-  const JsPDF = _getJsPDF(), o=out.width>=out.height?'landscape':'portrait';
-  const pdf=new JsPDF({orientation:o,unit:'px',format:[out.width,out.height],compress:true});
+  const JsPDF = _getJsPDF();
+  const {pw, ph, clamped} = pdfPageDims(out.width, out.height);
+  const o=pw>=ph?'landscape':'portrait';
+  const pdf=new JsPDF({orientation:o,unit:'px',format:[pw,ph],compress:true});
   // Base overlay — auto-picks PNG or JPEG (whichever is smaller)
-  const img = await addCanvasImageToPdf(pdf, out, 0, 0, out.width, out.height);
+  const img = await addCanvasImageToPdf(pdf, out, 0, 0, pw, ph);
   // Annotations as separate transparent PNG layer
   const annotations = collectAnnotationsForPage(currentPage);
   const annCanvas = renderAnnotationsCanvas(annotations, out.width, out.height);
   if (annCanvas) {
     const pngData = await canvasToBlob(annCanvas, 'image/png');
-    pdf.addImage(pngData,'PNG',0,0,out.width,out.height,undefined,'FAST');
+    pdf.addImage(pngData,'PNG',0,0,pw,ph,undefined,'FAST');
   }
   pdf.save(`overlay-page-${currentPage}.pdf`);
-  console.log(`Export: ${img.format}, ${(img.data.byteLength/1048576).toFixed(1)} MB`);
+  const info = `Export: ${img.format}, ${(img.data.byteLength/1048576).toFixed(1)} MB`;
+  if (clamped) console.warn(info + ` (PDF page scaled down to fit jsPDF ${JSPDF_MAX_DIM}px limit)`);
+  else console.log(info);
 }
 async function exportAllPDF() {
   if(!rawOld&&!rawNew) return alert('Nothing to export.');
   if (!_ensureJsPDF()) return;
   const JsPDF = _getJsPDF(), btn=$('btn-export-all'), origText=btn.textContent;
-  let pdf=null, totalBytes=0;
+  let pdf=null, totalBytes=0, anyClamped=false;
   const savedPage=currentPage;
   try {
     for(let p=1;p<=maxPages;p++) {
       btn.textContent=`${p}/${maxPages}…`; await sleep(30);
       currentPage=p; loadOffsetUI(); await renderPage(p);
-      const c=DOM.canvasOutput, o=c.width>=c.height?'landscape':'portrait';
-      if(p===1) pdf=new JsPDF({orientation:o,unit:'px',format:[c.width,c.height],compress:true});
-      else pdf.addPage([c.width,c.height],o);
+      const c=DOM.canvasOutput;
+      const {pw, ph, clamped} = pdfPageDims(c.width, c.height);
+      if (clamped) anyClamped = true;
+      const o=pw>=ph?'landscape':'portrait';
+      if(p===1) pdf=new JsPDF({orientation:o,unit:'px',format:[pw,ph],compress:true});
+      else pdf.addPage([pw,ph],o);
       // Base overlay — auto-picks PNG or JPEG
-      const img = await addCanvasImageToPdf(pdf, c, 0, 0, c.width, c.height);
+      const img = await addCanvasImageToPdf(pdf, c, 0, 0, pw, ph);
       totalBytes += img.data.byteLength;
       // Annotations as separate transparent PNG layer
       const annotations = collectAnnotationsForPage(p);
       const annCanvas = renderAnnotationsCanvas(annotations, c.width, c.height);
       if (annCanvas) {
         const pngData = await canvasToBlob(annCanvas, 'image/png');
-        pdf.addImage(pngData,'PNG',0,0,c.width,c.height,undefined,'FAST');
+        pdf.addImage(pngData,'PNG',0,0,pw,ph,undefined,'FAST');
       }
     }
     pdf.save(`overlay-all-pages-${new Date().toISOString().slice(0,10)}.pdf`);
-    console.log(`Export all: ${maxPages} pages, ~${(totalBytes/1048576).toFixed(1)} MB image data`);
+    const info = `Export all: ${maxPages} pages, ~${(totalBytes/1048576).toFixed(1)} MB image data`;
+    if (anyClamped) console.warn(info + ` (some pages scaled down to fit jsPDF ${JSPDF_MAX_DIM}px limit)`);
+    else console.log(info);
   } finally {
     currentPage=savedPage; loadOffsetUI(); await renderPage(savedPage); updatePageNav();
     btn.textContent=origText;
@@ -1993,8 +2019,9 @@ function computeAndApplyAlign3() {
 
   if (existingXform && rawOld && rawNew) {
     // ── SECOND+ ALIGNMENT (existing affine) ──
-    // Both old and new clicks are in canvas coords. Remove the canvas shift,
-    // then solve a correction affine and compose it with the existing one.
+    // Convert clicked canvas positions back to raw pixel coordinates,
+    // then solve a fresh affine directly. This avoids composition
+    // numerical issues from repeated alignments.
 
     const wO0 = rawOld.width * sO, hO0 = rawOld.height * sO;
     // Recompute canvas shift (same logic as composite's affine branch)
@@ -2009,42 +2036,44 @@ function computeAndApplyAlign3() {
     const shiftX = minX < 0 ? -minX : 0;
     const shiftY = minY < 0 ? -minY : 0;
 
-    // Remove canvas shift from both point sets
-    const adjNew = align3PointsNew.map(pt => ({ x: pt.x - shiftX, y: pt.y - shiftY }));
+    // Remove canvas shift to get pre-shift positions
     const adjOld = align3PointsOld.map(pt => ({ x: pt.x - shiftX, y: pt.y - shiftY }));
+    const adjNew = align3PointsNew.map(pt => ({ x: pt.x - shiftX, y: pt.y - shiftY }));
 
-    // Solve correction: maps new-canvas-pos → old-canvas-pos
-    const correction = solveAffine(adjNew, adjOld);
-    if (!correction) {
+    // Convert new clicked positions to raw new pixel coordinates
+    // by inverting the existing transform: rawNewPx = E⁻¹(adjNew)
+    const E = existingXform;
+    const det = E.a * E.d - E.b * E.c;
+    if (Math.abs(det) < 1e-10) {
+      alert('Existing transform is degenerate. Clear alignment and try again.');
+      cancelAlign3();
+      return;
+    }
+    const rawNewPts = adjNew.map(pt => ({
+      x: (E.d * (pt.x - E.e) - E.b * (pt.y - E.f)) / det,
+      y: (-E.c * (pt.x - E.e) + E.a * (pt.y - E.f)) / det
+    }));
+
+    // Solve fresh affine: rawNewPx → adjOld (pre-shift old canvas position)
+    // adjOld = sO * rawOldPx, which is where old features sit in pre-shift canvas.
+    // This direct solve avoids composition and shift-dependency issues.
+    transform = solveAffine(rawNewPts, adjOld);
+    if (!transform) {
       alert('Points are collinear — pick non-collinear points.');
       cancelAlign3();
       return;
     }
 
-    // Compose: final = correction ∘ existingXform
-    // final(rawPx) = correction(existingXform(rawPx)) = oldCanvasPos
-    const E = existingXform, C = correction;
-    transform = {
-      a: C.a * E.a + C.b * E.c,
-      b: C.a * E.b + C.b * E.d,
-      c: C.c * E.a + C.d * E.c,
-      d: C.c * E.b + C.d * E.d,
-      e: C.a * E.e + C.b * E.f + C.e,
-      f: C.c * E.e + C.d * E.f + C.f
-    };
+    // Snap small rotations
+    transform = snapAffineRotation(transform, rawNewPts, adjOld);
 
-    // Snap small rotations: compute raw pixel coords for centroid matching
-    const det = E.a * E.d - E.b * E.c;
-    if (Math.abs(det) > 1e-10) {
-      const rawNewPts = adjNew.map(pt => {
-        const px = (E.d * (pt.x - E.e) - E.b * (pt.y - E.f)) / det;
-        const py = (-E.c * (pt.x - E.e) + E.a * (pt.y - E.f)) / det;
-        return { x: px, y: py };
-      });
-      transform = snapAffineRotation(transform, rawNewPts, adjOld);
-    }
-
-    // No baking needed — the composed affine already maps rawPx → canvas pos
+    // No baking needed — T already maps rawNewPx → pre-shift canvas coords
+    console.log('3-point align (refine): fresh solve from raw pixels', {
+      shift: [shiftX, shiftY], det,
+      rawNewPts: rawNewPts.map(p => [Math.round(p.x), Math.round(p.y)]),
+      adjOld: adjOld.map(p => [Math.round(p.x), Math.round(p.y)]),
+      result: { a: transform.a.toFixed(6), b: transform.b.toFixed(6), c: transform.c.toFixed(6), d: transform.d.toFixed(6), e: transform.e.toFixed(2), f: transform.f.toFixed(2) }
+    });
   } else {
     // ── FIRST ALIGNMENT (no existing affine) ──
     // In the standard composite path, new is drawn at sN * rawPx + offset.
@@ -2068,6 +2097,9 @@ function computeAndApplyAlign3() {
     transform.b *= sN;
     transform.c *= sN;
     transform.d *= sN;
+    console.log('3-point align (first): sN=' + sN.toFixed(4), {
+      result: { a: transform.a.toFixed(6), b: transform.b.toFixed(6), c: transform.c.toFixed(6), d: transform.d.toFixed(6), e: transform.e.toFixed(2), f: transform.f.toFixed(2) }
+    });
   }
 
   // ── Decompose for UI display ──
