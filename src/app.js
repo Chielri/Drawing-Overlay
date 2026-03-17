@@ -896,9 +896,9 @@ function _applyScale() {
   const sO = parseInt(DOM.inputScaleOld.value) || 100;
   const sN = parseInt(DOM.inputScaleNew.value) || 100;
   if (DOM.transformScope.value === 'all') {
-    for (let p = 1; p <= maxPages; p++) setPageScale(p, sO, sN);
+    for (let p = 1; p <= maxPages; p++) { clearPageTransform(p); setPageScale(p, sO, sN); }
   } else {
-    setPageScale(currentPage, sO, sN);
+    clearPageTransform(currentPage); setPageScale(currentPage, sO, sN);
   }
   if (rawOld || rawNew) recolorAndComposite();
 }
@@ -1062,9 +1062,9 @@ function loadRotationUI() {
 function applyRotation() {
   const deg = parseFloat(DOM.inputRotation.value) || 0;
   if (DOM.transformScope.value === 'all') {
-    for (let p = 1; p <= maxPages; p++) setPageRotation(p, deg);
+    for (let p = 1; p <= maxPages; p++) { clearPageTransform(p); setPageRotation(p, deg); }
   } else {
-    setPageRotation(currentPage, deg);
+    clearPageTransform(currentPage); setPageRotation(currentPage, deg);
   }
   if (rawOld || rawNew) recolorAndComposite();
 }
@@ -1111,15 +1111,15 @@ function updateSliderRange() {
 function applyOffset() {
   const x=parseInt(DOM.offsetX.value)||0, y=parseInt(DOM.offsetY.value)||0;
   syncSliders();
-  if (DOM.transformScope.value==='all') { for(let p=1;p<=maxPages;p++) setPageOffset(p,x,y); }
-  else setPageOffset(currentPage,x,y);
-  // FIX: rAF-gated — slider fires 60+ Hz, but we render max once/frame
+  // Clear affine transform so manual offset takes effect via standard path
+  if (DOM.transformScope.value==='all') { for(let p=1;p<=maxPages;p++) { clearPageTransform(p); setPageOffset(p,x,y); } }
+  else { clearPageTransform(currentPage); setPageOffset(currentPage,x,y); }
   if (rawOld||rawNew) recolorAndComposite();
 }
 function nudgeOffset(dx,dy) {
   const scope=DOM.transformScope.value;
-  if (scope==='all') { for(let p=1;p<=maxPages;p++){const o=getPageOffset(p);setPageOffset(p,o.x+dx,o.y+dy);} }
-  else { const o=getPageOffset(currentPage); setPageOffset(currentPage,o.x+dx,o.y+dy); }
+  if (scope==='all') { for(let p=1;p<=maxPages;p++){clearPageTransform(p);const o=getPageOffset(p);setPageOffset(p,o.x+dx,o.y+dy);} }
+  else { clearPageTransform(currentPage); const o=getPageOffset(currentPage); setPageOffset(currentPage,o.x+dx,o.y+dy); }
   loadOffsetUI();
   if (rawOld||rawNew) recolorAndComposite();
 }
@@ -1882,20 +1882,40 @@ function computeAndApplyAlign3() {
   // Snap tiny rotations (<1°) caused by imprecise clicking
   transform = snapAffineRotation(transform, align3PointsNew, align3PointsOld);
 
-  // Store the raw affine transform directly — avoids decomposition errors
-  // The affine composite path uses this to correctly place the new image
+  // Store the raw affine transform — the affine composite path uses this directly
+  // Also decompose for UI display (offset/scale/rotation fields)
+  const rotRad = Math.atan2(transform.c, transform.a);
+  const rotDeg = Math.round(rotRad * 180 / Math.PI * 100) / 100;
+  const sx = Math.sqrt(transform.a * transform.a + transform.c * transform.c);
+  const sy = Math.sqrt(transform.b * transform.b + transform.d * transform.d);
+  let uniformScale = (sx + sy) / 2;
+  if (Math.abs(uniformScale - 1) < 0.01) uniformScale = 1;
+  const ps = getPageScale(currentPage);
+  const sN = ps.new / 100;
+  const scaleNewPercent = Math.round(ps.new * uniformScale * 10) / 10;
+  // Compute display offset from affine translation
+  const sN_new = sN * uniformScale;
+  const imgW = rawNew.width, imgH = rawNew.height;
+  const wN_new = imgW * sN_new, hN_new = imgH * sN_new;
+  const cosR = Math.cos(rotRad), sinR = Math.sin(rotRad);
+  const cx = wN_new / 2, cy = hN_new / 2;
+  const dispOx = Math.round((transform.e + cosR * cx - sinR * cy - cx) * 10) / 10;
+  const dispOy = Math.round((transform.f + sinR * cx + cosR * cy - cy) * 10) / 10;
+
   const scope = DOM.transformScope.value;
   if (scope === 'all') {
     for (let p = 1; p <= maxPages; p++) {
       setPageTransform(p, { ...transform });
-      // Reset manual offset/rotation so affine path is used cleanly
-      setPageOffset(p, 0, 0);
-      setPageRotation(p, 0);
+      // Store decomposed values for UI display
+      setPageOffset(p, dispOx, dispOy);
+      setPageRotation(p, rotDeg);
+      setPageScale(p, ps.old, scaleNewPercent);
     }
   } else {
     setPageTransform(currentPage, { ...transform });
-    setPageOffset(currentPage, 0, 0);
-    setPageRotation(currentPage, 0);
+    setPageOffset(currentPage, dispOx, dispOy);
+    setPageRotation(currentPage, rotDeg);
+    setPageScale(currentPage, ps.old, scaleNewPercent);
   }
 
   // End picking mode — clear markers since alignment is applied to offset/scale/rotation
