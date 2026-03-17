@@ -110,9 +110,6 @@
   .placeholder-msg p { font-size: 13px; line-height: 1.5; max-width: 360px; margin: 0 auto; }
   .zoom-bar { position: fixed; bottom: 14px; right: 14px; display: none; gap: 3px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; z-index: 20; }
   .zoom-bar.show { display: inline-flex; }
-  .zoom-btn { padding: 7px 11px; background: transparent; border: none; color: var(--text); font-size: 15px; cursor: pointer; }
-  .zoom-btn:hover { background: var(--surface2); }
-  .zoom-label { padding: 7px 4px; font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--text-dim); display: flex; align-items: center; }
   .mem-est { font-family: 'JetBrains Mono', monospace; font-size: 9px; color: var(--text-dim); text-align: center; margin-top: 2px; }
 
   /* Page go-to input */
@@ -197,14 +194,27 @@
   }
   .sbs-divider { width: 3px; flex-shrink: 0; background: var(--border); }
 
+  /* Bottom bar: combined toolbar + page nav */
+  .bottom-bar {
+    position: fixed; bottom: 14px; left: 50%; transform: translateX(-50%);
+    display: none; align-items: center; gap: 6px; z-index: 20;
+  }
+  .bottom-bar.show { display: inline-flex; }
+  .zoom-btn { padding: 7px 11px; background: transparent; border: none; color: var(--text); font-size: 15px; cursor: pointer; }
+  .zoom-btn:hover { background: var(--surface2); }
+  .zoom-label { padding: 7px 4px; font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--text-dim); display: flex; align-items: center; }
   /* Drawing toolbar */
   .draw-toolbar {
-    position: fixed; bottom: 14px; left: 50%; transform: translateX(-50%);
-    display: none; gap: 2px; align-items: center;
+    display: inline-flex; gap: 2px; align-items: center;
     background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
-    padding: 3px 6px; z-index: 20;
+    padding: 3px 6px;
   }
-  .draw-toolbar.show { display: inline-flex; }
+  /* Page nav bar in bottom bar */
+  .page-nav-bar {
+    display: inline-flex; align-items: center; gap: 6px;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+    padding: 3px 10px;
+  }
   .draw-tool-btn {
     padding: 5px 9px; background: transparent; border: 1px solid transparent;
     border-radius: 6px; color: var(--text-dim); font-size: 14px; cursor: pointer;
@@ -283,6 +293,17 @@
   }
   .align3-overlay.picking { pointer-events: auto; cursor: crosshair; }
   .canvas-container { position: relative; }
+
+  /* Collapsible cache section */
+  .collapsible-title {
+    cursor: pointer; user-select: none; display: flex; align-items: center; justify-content: space-between;
+  }
+  .collapsible-title:hover { color: var(--text); }
+  .cache-summary {
+    display: flex; align-items: center; justify-content: space-between;
+    font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--text-dim);
+    padding: 4px 0;
+  }
 </style>
 
 <!-- Inlined libraries — no CDN dependency, no tracking prevention issues -->
@@ -783,8 +804,14 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       <div class="section-title">Colors</div>
       <div class="color-row"><label id="label-color-old">Old Revision</label><input type="color" id="color-old" value="#2979ff" /></div>
       <div class="color-row"><label id="label-color-new">New Revision</label><input type="color" id="color-new" value="#ff1744" /></div>
-      <div class="section-title" style="margin-top:8px;">Presets</div>
+      <div class="section-title" style="margin-top:8px;">Preset Colors</div>
       <div class="preset-grid" id="preset-grid"></div>
+      <div class="section-title" style="margin-top:8px;">Legend</div>
+      <div class="legend">
+        <div class="legend-item"><div class="legend-swatch" id="swatch-old" style="background:#2979ff;"></div><span>Only in old (removed)</span></div>
+        <div class="legend-item"><div class="legend-swatch" id="swatch-new" style="background:#ff1744;"></div><span>Only in new (added)</span></div>
+        <div class="legend-item"><div class="legend-swatch" id="swatch-overlap" style="background:#7a4dcc;"></div><span>Unchanged (overlap)</span></div>
+      </div>
     </div>
     <div class="control-group">
       <div class="section-title">Render Quality (PPI)</div>
@@ -894,59 +921,56 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       </div>
       <div class="offset-hint">All transforms stored per page.</div>
     </div>
-    <div>
-      <div class="section-title">Page Navigation</div>
-      <div class="page-nav">
-        <button class="page-btn" id="btn-prev" disabled onclick="changePage(-1)">←</button>
-        <input type="number" class="page-goto" id="page-goto" value="1" min="1" max="1" onchange="goToPage()" onkeydown="if(event.key==='Enter'){event.target.blur();goToPage();}" />
-        <span class="page-total">/ <span id="page-total">1</span></span>
-        <button class="page-btn" id="btn-next" disabled onclick="changePage(1)">→</button>
-      </div>
-      <div class="cache-status-wrap">
-        <div class="cache-bar-bg"><div class="cache-bar" id="cache-bar"></div></div>
-        <div class="cache-text" id="cache-status">No pages cached</div>
-        <div class="mem-est" id="mem-est"></div>
-        <div style="margin-top:6px;">
-          <div class="control-row"><span class="control-label" style="font-size:11px;">Memory Limit</span><span class="control-value" id="mem-limit-val">4096 MB</span></div>
-          <input type="range" id="mem-limit" min="256" max="8192" step="256" value="4096" oninput="changeMemLimit()" style="width:100%;" />
-          <div class="offset-hint">Controls how much RAM is used for cached page renders. Higher = faster page switching but more memory. Lower if your browser slows down.</div>
-        </div>
-        <div class="cache-controls">
-          <div class="cache-range-row"><span class="offset-range-label">From</span><input type="number" class="cache-range-input" id="cache-from" value="1" min="1" /><span class="offset-range-label">to</span><input type="number" class="cache-range-input" id="cache-to" value="1" min="1" /></div>
-          <div class="cache-btn-row">
-            <button class="offset-btn" onclick="cacheRange()">Cache Range</button>
-            <button class="offset-btn" onclick="cacheAllPages()">Cache All</button>
-            <button class="offset-btn" onclick="clearCache()">Clear Cache</button>
-          </div>
-          <div class="cache-indicator" id="cache-indicator"></div>
-        </div>
-      </div>
-    </div>
-    <div>
-      <div class="section-title">Legend</div>
-      <div class="legend">
-        <div class="legend-item"><div class="legend-swatch" id="swatch-old" style="background:#2979ff;"></div><span>Only in old (removed)</span></div>
-        <div class="legend-item"><div class="legend-swatch" id="swatch-new" style="background:#ff1744;"></div><span>Only in new (added)</span></div>
-        <div class="legend-item"><div class="legend-swatch" id="swatch-overlap" style="background:#7a4dcc;"></div><span>Unchanged (overlap)</span></div>
-      </div>
-    </div>
     <div class="control-group">
       <div class="section-title">Save / Load</div>
       <div class="save-row">
         <button class="save-btn primary" onclick="savePreset()">💾 Save Preset</button>
         <button class="save-btn" onclick="DOM.loadInput.click()">📂 Load Preset<input type="file" id="load-input" accept=".json" onchange="loadPreset(event)" /></button>
       </div>
-      <div class="save-row" style="margin-top:4px;">
+      <div class="section-title" style="margin-top:8px;">Export Image</div>
+      <div class="save-row">
         <button class="save-btn" onclick="exportPNG()">📷 PNG</button>
-        <button class="save-btn" onclick="exportPDF()">📄 PDF</button>
-        <button class="save-btn" id="btn-export-all" onclick="exportAllPDF()">📦 All → PDF</button>
         <button class="save-btn" id="btn-export-zip" onclick="exportAllPNG()">🗜️ All → ZIP</button>
       </div>
-      <div class="save-row" style="margin-top:4px;">
+      <div class="section-title" style="margin-top:8px;">Export PDF</div>
+      <div class="save-row">
+        <button class="save-btn" onclick="exportPDF()">📄 PDF</button>
+        <button class="save-btn" id="btn-export-all" onclick="exportAllPDF()">📦 All → PDF</button>
+      </div>
+      <div class="save-row" style="margin-top:8px;">
         <button class="save-btn" onclick="setAsDefault()">⚙ Set as Default</button>
         <button class="save-btn" onclick="resetToDefaults()" style="color:var(--red);">↺ Reset Defaults</button>
       </div>
       <div class="offset-hint">Set as Default saves settings to browser. Loads automatically next time.</div>
+    </div>
+    <div class="control-group">
+      <div class="section-title collapsible-title" onclick="toggleCacheSection(this)">
+        Memory & Cache Management <span class="sub-section-chevron">▸</span>
+      </div>
+      <div class="cache-summary" id="cache-summary">
+        <span class="cache-summary-text" id="cache-summary-text">No pages cached</span>
+        <span class="cache-summary-mem" id="cache-summary-mem">0 / 4096 MB</span>
+      </div>
+      <div class="cache-detail" id="cache-detail" style="display:none;">
+        <div class="cache-status-wrap">
+          <div class="cache-bar-bg"><div class="cache-bar" id="cache-bar"></div></div>
+          <div class="cache-text" id="cache-status">No pages cached</div>
+          <div class="mem-est" id="mem-est"></div>
+          <div style="margin-top:6px;">
+            <div class="control-row"><span class="control-label" style="font-size:11px;">Memory Limit</span><span class="control-value" id="mem-limit-val">4096 MB</span></div>
+            <input type="range" id="mem-limit" min="256" max="8192" step="256" value="4096" oninput="changeMemLimit()" style="width:100%;" />
+          </div>
+          <div class="cache-controls">
+            <div class="cache-range-row"><span class="offset-range-label">From</span><input type="number" class="cache-range-input" id="cache-from" value="1" min="1" /><span class="offset-range-label">to</span><input type="number" class="cache-range-input" id="cache-to" value="1" min="1" /></div>
+            <div class="cache-btn-row">
+              <button class="offset-btn" onclick="cacheRange()">Cache Range</button>
+              <button class="offset-btn" onclick="cacheAllPages()">Cache All</button>
+              <button class="offset-btn" onclick="clearCache()">Clear Cache</button>
+            </div>
+            <div class="cache-indicator" id="cache-indicator"></div>
+          </div>
+        </div>
+      </div>
     </div>
   </div>
   <div class="thumb-panel" id="thumb-panel">
@@ -1000,34 +1024,42 @@ https://github.com/nodeca/pako/blob/main/LICENSE
     </div>
   </div>
 </div>
-<div class="draw-toolbar" id="draw-toolbar">
-  <button class="draw-tool-btn active" id="draw-tool-pan" onclick="setDrawTool('pan')" title="Pan (V)">✥</button>
-  <button class="draw-tool-btn" id="draw-tool-pen" onclick="setDrawTool('pen')" title="Pen (P)">✎</button>
-  <button class="draw-tool-btn" id="draw-tool-line" onclick="setDrawTool('line')" title="Line (L)">╱</button>
-  <button class="draw-tool-btn" id="draw-tool-arrow" onclick="setDrawTool('arrow')" title="Arrow (A)">→</button>
-  <button class="draw-tool-btn" id="draw-tool-highlight" onclick="setDrawTool('highlight')" title="Highlighter (H)">▬</button>
-  <button class="draw-tool-btn" id="draw-tool-rect" onclick="setDrawTool('rect')" title="Rectangle (R)">▭</button>
-  <button class="draw-tool-btn" id="draw-tool-text" onclick="setDrawTool('text')" title="Text (T)">T</button>
-  <button class="draw-tool-btn" id="draw-tool-eraser" onclick="setDrawTool('eraser')" title="Eraser (E)">⌫</button>
-  <span class="draw-sep"></span>
-  <input type="color" class="draw-color-pick" id="draw-color" value="#ff1744" title="Stroke color" />
-  <select class="draw-width-pick" id="draw-width" title="Stroke width">
-    <option value="1">1px</option>
-    <option value="2" selected>2px</option>
-    <option value="3">3px</option>
-    <option value="5">5px</option>
-  </select>
-  <span class="draw-sep"></span>
-  <span class="draw-group-label">Cursor</span>
-  <input type="color" class="draw-color-pick" id="xhair-color" value="#00ff00" title="Crosshair color" />
-  <select class="draw-width-pick" id="xhair-size" title="Crosshair size">
-    <option value="1">S</option>
-    <option value="2" selected>M</option>
-    <option value="3">L</option>
-  </select>
-  <span class="draw-sep"></span>
-  <button class="draw-tool-btn" id="draw-tool-undo" onclick="drawUndo()" title="Undo (Ctrl+Z)">↩</button>
-  <button class="draw-tool-btn" id="draw-tool-clear" onclick="drawClear()" title="Clear all">✕</button>
+<div class="bottom-bar" id="bottom-bar">
+  <div class="draw-toolbar" id="draw-toolbar">
+    <button class="draw-tool-btn active" id="draw-tool-pan" onclick="setDrawTool('pan')" title="Pan (V)">✥</button>
+    <button class="draw-tool-btn" id="draw-tool-pen" onclick="setDrawTool('pen')" title="Pen (P)">✎</button>
+    <button class="draw-tool-btn" id="draw-tool-line" onclick="setDrawTool('line')" title="Line (L)">╱</button>
+    <button class="draw-tool-btn" id="draw-tool-arrow" onclick="setDrawTool('arrow')" title="Arrow (A)">→</button>
+    <button class="draw-tool-btn" id="draw-tool-highlight" onclick="setDrawTool('highlight')" title="Highlighter (H)">▬</button>
+    <button class="draw-tool-btn" id="draw-tool-rect" onclick="setDrawTool('rect')" title="Rectangle (R)">▭</button>
+    <button class="draw-tool-btn" id="draw-tool-text" onclick="setDrawTool('text')" title="Text (T)">T</button>
+    <button class="draw-tool-btn" id="draw-tool-eraser" onclick="setDrawTool('eraser')" title="Eraser (E)">⌫</button>
+    <span class="draw-sep"></span>
+    <input type="color" class="draw-color-pick" id="draw-color" value="#ff1744" title="Stroke color" />
+    <select class="draw-width-pick" id="draw-width" title="Stroke width">
+      <option value="1">1px</option>
+      <option value="2" selected>2px</option>
+      <option value="3">3px</option>
+      <option value="5">5px</option>
+    </select>
+    <span class="draw-sep"></span>
+    <span class="draw-group-label">Cursor</span>
+    <input type="color" class="draw-color-pick" id="xhair-color" value="#00ff00" title="Crosshair color" />
+    <select class="draw-width-pick" id="xhair-size" title="Crosshair size">
+      <option value="1">S</option>
+      <option value="2" selected>M</option>
+      <option value="3">L</option>
+    </select>
+    <span class="draw-sep"></span>
+    <button class="draw-tool-btn" id="draw-tool-undo" onclick="drawUndo()" title="Undo (Ctrl+Z)">↩</button>
+    <button class="draw-tool-btn" id="draw-tool-clear" onclick="drawClear()" title="Clear all">✕</button>
+  </div>
+  <div class="page-nav-bar" id="page-nav-bar">
+    <button class="page-btn" id="btn-prev" disabled onclick="changePage(-1)">←</button>
+    <input type="number" class="page-goto" id="page-goto" value="1" min="1" max="1" onchange="goToPage()" onkeydown="if(event.key==='Enter'){event.target.blur();goToPage();}" />
+    <span class="page-total">/ <span id="page-total">1</span></span>
+    <button class="page-btn" id="btn-next" disabled onclick="changePage(1)">→</button>
+  </div>
 </div>
 <div class="zoom-bar" id="zoom-bar">
   <button class="zoom-btn" onclick="doZoom(-0.15)">−</button>
@@ -1086,6 +1118,11 @@ const DOM = {
   drawToolbar: $('draw-toolbar'),
   drawColor: $('draw-color'), drawWidth: $('draw-width'),
   xhairColor: $('xhair-color'), xhairSize: $('xhair-size'),
+  // Bottom bar (page nav + draw tools)
+  bottomBar: $('bottom-bar'), pageNavBar: $('page-nav-bar'),
+  // Cache summary
+  cacheSummaryText: $('cache-summary-text'), cacheSummaryMem: $('cache-summary-mem'),
+  cacheDetail: $('cache-detail'),
   // Transform
   inputRotation: $('input-rotation'),
   // 3-point alignment
@@ -1375,10 +1412,13 @@ const PRESETS = [
   { name:'Cyan-Mag', old:'#00bcd4', new:'#e91e63' },
   { name:'Teal-Coral', old:'#009688', new:'#ff5722' },
   { name:'Navy-Amber', old:'#1a237e', new:'#ff8f00' },
-  { name:'Green-Red', old:'#2e7d32', new:'#c62828' },
   { name:'Purple-Org', old:'#7b1fa2', new:'#ef6c00' },
-  { name:'Blue-Green', old:'#1565c0', new:'#2e7d32' },
   { name:'Gray-Red', old:'#546e7a', new:'#d32f2f' },
+  // Colorblind-safe (Okabe-Ito / ColorBrewer)
+  { name:'CB Blue-Org', old:'#0072B2', new:'#E69F00' },
+  { name:'CB Grn-Verm', old:'#009E73', new:'#D55E00' },
+  { name:'CB Blue-Yel', old:'#0072B2', new:'#F0E442' },
+  { name:'CB Brn-Teal', old:'#8C510A', new:'#01665E' },
 ];
 (function() {
   PRESETS.forEach((p, i) => {
@@ -1469,7 +1509,7 @@ async function runCompare() {
   DOM.placeholder.style.display = 'none';
   DOM.canvasContainer.style.display = 'block';
   DOM.zoomBar.classList.add('show');
-  DOM.drawToolbar.classList.add('show');
+  DOM.bottomBar.classList.add('show');
   // Set correct layout for current mode
   if (mode === 'sidebyside') {
     DOM.canvasPad.style.display = 'none';
@@ -1518,6 +1558,9 @@ function updateCacheUI() {
   const pct = Math.min(100, (usedMB / cacheMemLimitMB * 100)).toFixed(0);
   DOM.memEst.textContent = `~${usedMB} / ${cacheMemLimitMB} MB (${pct}%)`;
   DOM.memEst.style.color = usedMB > cacheMemLimitMB * 0.9 ? '#ff6b6b' : '';
+  // Update collapsed summary
+  DOM.cacheSummaryText.textContent = DOM.cacheStatus.textContent;
+  DOM.cacheSummaryMem.textContent = `${usedMB} / ${cacheMemLimitMB} MB`;
   DOM.cacheIndicator.innerHTML = '';
   if (total > 0 && total <= 60) {
     let html = '';
@@ -1981,6 +2024,20 @@ async function changePPI() {
 // -- Sub-section toggle --
 function toggleSubSection(headerEl) {
   headerEl.parentElement.classList.toggle('collapsed');
+}
+function toggleCacheSection(titleEl) {
+  const chevron = titleEl.querySelector('.sub-section-chevron');
+  const detail = DOM.cacheDetail;
+  const summary = DOM.cacheSummaryText.parentElement;
+  if (detail.style.display === 'none') {
+    detail.style.display = '';
+    summary.style.display = 'none';
+    chevron.textContent = '▾';
+  } else {
+    detail.style.display = 'none';
+    summary.style.display = '';
+    chevron.textContent = '▸';
+  }
 }
 // -- Reset all transforms for scope --
 function resetAllTransforms() {

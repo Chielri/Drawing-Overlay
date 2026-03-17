@@ -47,6 +47,11 @@ const DOM = {
   drawToolbar: $('draw-toolbar'),
   drawColor: $('draw-color'), drawWidth: $('draw-width'),
   xhairColor: $('xhair-color'), xhairSize: $('xhair-size'),
+  // Bottom bar (page nav + draw tools)
+  bottomBar: $('bottom-bar'), pageNavBar: $('page-nav-bar'),
+  // Cache summary
+  cacheSummaryText: $('cache-summary-text'), cacheSummaryMem: $('cache-summary-mem'),
+  cacheDetail: $('cache-detail'),
   // Transform
   inputRotation: $('input-rotation'),
   // 3-point alignment
@@ -336,10 +341,13 @@ const PRESETS = [
   { name:'Cyan-Mag', old:'#00bcd4', new:'#e91e63' },
   { name:'Teal-Coral', old:'#009688', new:'#ff5722' },
   { name:'Navy-Amber', old:'#1a237e', new:'#ff8f00' },
-  { name:'Green-Red', old:'#2e7d32', new:'#c62828' },
   { name:'Purple-Org', old:'#7b1fa2', new:'#ef6c00' },
-  { name:'Blue-Green', old:'#1565c0', new:'#2e7d32' },
   { name:'Gray-Red', old:'#546e7a', new:'#d32f2f' },
+  // Colorblind-safe (Okabe-Ito / ColorBrewer)
+  { name:'CB Blue-Org', old:'#0072B2', new:'#E69F00' },
+  { name:'CB Grn-Verm', old:'#009E73', new:'#D55E00' },
+  { name:'CB Blue-Yel', old:'#0072B2', new:'#F0E442' },
+  { name:'CB Brn-Teal', old:'#8C510A', new:'#01665E' },
 ];
 (function() {
   PRESETS.forEach((p, i) => {
@@ -430,7 +438,7 @@ async function runCompare() {
   DOM.placeholder.style.display = 'none';
   DOM.canvasContainer.style.display = 'block';
   DOM.zoomBar.classList.add('show');
-  DOM.drawToolbar.classList.add('show');
+  DOM.bottomBar.classList.add('show');
   // Set correct layout for current mode
   if (mode === 'sidebyside') {
     DOM.canvasPad.style.display = 'none';
@@ -479,6 +487,9 @@ function updateCacheUI() {
   const pct = Math.min(100, (usedMB / cacheMemLimitMB * 100)).toFixed(0);
   DOM.memEst.textContent = `~${usedMB} / ${cacheMemLimitMB} MB (${pct}%)`;
   DOM.memEst.style.color = usedMB > cacheMemLimitMB * 0.9 ? '#ff6b6b' : '';
+  // Update collapsed summary
+  DOM.cacheSummaryText.textContent = DOM.cacheStatus.textContent;
+  DOM.cacheSummaryMem.textContent = `${usedMB} / ${cacheMemLimitMB} MB`;
   DOM.cacheIndicator.innerHTML = '';
   if (total > 0 && total <= 60) {
     let html = '';
@@ -942,6 +953,20 @@ async function changePPI() {
 // -- Sub-section toggle --
 function toggleSubSection(headerEl) {
   headerEl.parentElement.classList.toggle('collapsed');
+}
+function toggleCacheSection(titleEl) {
+  const chevron = titleEl.querySelector('.sub-section-chevron');
+  const detail = DOM.cacheDetail;
+  const summary = DOM.cacheSummaryText.parentElement;
+  if (detail.style.display === 'none') {
+    detail.style.display = '';
+    summary.style.display = 'none';
+    chevron.textContent = '▾';
+  } else {
+    detail.style.display = 'none';
+    summary.style.display = '';
+    chevron.textContent = '▸';
+  }
 }
 // -- Reset all transforms for scope --
 function resetAllTransforms() {
