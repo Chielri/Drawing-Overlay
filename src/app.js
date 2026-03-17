@@ -1382,6 +1382,13 @@ async function canvasToSmallestImage(canvas, jpegQuality) {
   return { data: jpegData, format: 'JPEG' };
 }
 
+const JSPDF_MAX_DIM = 14400;
+function pdfPageDims(w, h) {
+  const scale = Math.min(1, JSPDF_MAX_DIM / Math.max(w, h));
+  if (scale < 1) console.warn(`PDF page ${w}×${h}px exceeds jsPDF limit of ${JSPDF_MAX_DIM}. Scaling to ${Math.round(w*scale)}×${Math.round(h*scale)} in PDF (image quality preserved).`);
+  return { pw: w * scale, ph: h * scale, scale, clamped: scale < 1 };
+}
+
 async function addCanvasImageToPdf(pdf, canvas, x, y, w, h) {
   const img = await canvasToSmallestImage(canvas, getJpegQuality());
   pdf.addImage(img.data, img.format, x, y, w, h, undefined, 'FAST');
@@ -1391,46 +1398,55 @@ async function addCanvasImageToPdf(pdf, canvas, x, y, w, h) {
 async function exportPDF() {
   const out=DOM.canvasOutput; if(!out.width) return alert('Nothing to export.');
   if (!await _ensureJsPDF()) return;
-  const JsPDF = _getJsPDF(), o=out.width>=out.height?'landscape':'portrait';
-  const pdf=new JsPDF({orientation:o,unit:'px',format:[out.width,out.height],compress:true});
+  const JsPDF = _getJsPDF();
+  const {pw, ph, clamped} = pdfPageDims(out.width, out.height);
+  const o=pw>=ph?'landscape':'portrait';
+  const pdf=new JsPDF({orientation:o,unit:'px',format:[pw,ph],compress:true});
   // Base overlay — auto-picks PNG or JPEG (whichever is smaller)
-  const img = await addCanvasImageToPdf(pdf, out, 0, 0, out.width, out.height);
+  const img = await addCanvasImageToPdf(pdf, out, 0, 0, pw, ph);
   // Annotations as separate transparent PNG layer
   const annotations = collectAnnotationsForPage(currentPage);
   const annCanvas = renderAnnotationsCanvas(annotations, out.width, out.height);
   if (annCanvas) {
     const pngData = await canvasToBlob(annCanvas, 'image/png');
-    pdf.addImage(pngData,'PNG',0,0,out.width,out.height,undefined,'FAST');
+    pdf.addImage(pngData,'PNG',0,0,pw,ph,undefined,'FAST');
   }
   pdf.save(`overlay-page-${currentPage}.pdf`);
-  console.log(`Export: ${img.format}, ${(img.data.byteLength/1048576).toFixed(1)} MB`);
+  const info = `Export: ${img.format}, ${(img.data.byteLength/1048576).toFixed(1)} MB`;
+  if (clamped) console.warn(info + ` (PDF page scaled down to fit jsPDF ${JSPDF_MAX_DIM}px limit)`);
+  else console.log(info);
 }
 async function exportAllPDF() {
   if(!rawOld&&!rawNew) return alert('Nothing to export.');
   if (!_ensureJsPDF()) return;
   const JsPDF = _getJsPDF(), btn=$('btn-export-all'), origText=btn.textContent;
-  let pdf=null, totalBytes=0;
+  let pdf=null, totalBytes=0, anyClamped=false;
   const savedPage=currentPage;
   try {
     for(let p=1;p<=maxPages;p++) {
       btn.textContent=`${p}/${maxPages}…`; await sleep(30);
       currentPage=p; loadOffsetUI(); await renderPage(p);
-      const c=DOM.canvasOutput, o=c.width>=c.height?'landscape':'portrait';
-      if(p===1) pdf=new JsPDF({orientation:o,unit:'px',format:[c.width,c.height],compress:true});
-      else pdf.addPage([c.width,c.height],o);
+      const c=DOM.canvasOutput;
+      const {pw, ph, clamped} = pdfPageDims(c.width, c.height);
+      if (clamped) anyClamped = true;
+      const o=pw>=ph?'landscape':'portrait';
+      if(p===1) pdf=new JsPDF({orientation:o,unit:'px',format:[pw,ph],compress:true});
+      else pdf.addPage([pw,ph],o);
       // Base overlay — auto-picks PNG or JPEG
-      const img = await addCanvasImageToPdf(pdf, c, 0, 0, c.width, c.height);
+      const img = await addCanvasImageToPdf(pdf, c, 0, 0, pw, ph);
       totalBytes += img.data.byteLength;
       // Annotations as separate transparent PNG layer
       const annotations = collectAnnotationsForPage(p);
       const annCanvas = renderAnnotationsCanvas(annotations, c.width, c.height);
       if (annCanvas) {
         const pngData = await canvasToBlob(annCanvas, 'image/png');
-        pdf.addImage(pngData,'PNG',0,0,c.width,c.height,undefined,'FAST');
+        pdf.addImage(pngData,'PNG',0,0,pw,ph,undefined,'FAST');
       }
     }
     pdf.save(`overlay-all-pages-${new Date().toISOString().slice(0,10)}.pdf`);
-    console.log(`Export all: ${maxPages} pages, ~${(totalBytes/1048576).toFixed(1)} MB image data`);
+    const info = `Export all: ${maxPages} pages, ~${(totalBytes/1048576).toFixed(1)} MB image data`;
+    if (anyClamped) console.warn(info + ` (some pages scaled down to fit jsPDF ${JSPDF_MAX_DIM}px limit)`);
+    else console.log(info);
   } finally {
     currentPage=savedPage; loadOffsetUI(); await renderPage(savedPage); updatePageNav();
     btn.textContent=origText;
