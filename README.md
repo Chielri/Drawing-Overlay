@@ -14,6 +14,10 @@ A browser-based tool for visually comparing two PDF document revisions. Each PDF
 - **Export** — single-page PNG/PDF, all-pages PDF, or all-pages ZIP
 - **Presets** — save/load full comparison settings (including embedded PDFs) as JSON
 - **Keyboard shortcuts** — arrow keys, Page Up/Down, Home/End for navigation
+- **Drawing annotations** — pen, line, arrow, highlighter, rectangle, text, and eraser tools with per-page stroke storage
+- **3-point alignment** — pick 3 matching point pairs on old & new PDFs for automatic affine alignment
+- **Blend modes** — multiply or alpha overlay with configurable layer order
+- **Crosshair overlay** — toggleable crosshair with configurable color and size
 
 ## Usage
 
@@ -48,6 +52,12 @@ All libraries (PDF.js, jsPDF, JSZip) are inlined in the HTML file — no network
 | Blue (old color) | Content only in the old revision (removed) |
 | Red (new color) | Content only in the new revision (added) |
 | Purple (overlap) | Unchanged content present in both |
+
+## Planned Features
+
+- **Dimension line markup** — draw dimension/leader lines with length labels
+- **Measure tool** — click two points to measure distance on the canvas
+- **Calibrate measure** — set a known real-world distance to convert pixel measurements into real units (mm, cm, m, ft, etc.)
 
 ## License
 
