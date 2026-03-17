@@ -1873,7 +1873,55 @@ function computeAndApplyAlign3() {
   // We want: where should we place the NEW image so that its points match the OLD image's points?
   // The old image stays fixed. We need a transform T such that T(newPt[i]) = oldPt[i]
   // i.e., new PDF pixels → position on the composite canvas matching old PDF coordinates
-  let transform = solveAffine(align3PointsNew, align3PointsOld);
+
+  let newPts = align3PointsNew;
+  let oldPts = align3PointsOld;
+
+  // If there's already an affine transform on this page (e.g. from a global alignment),
+  // the new image is displayed through that transform. Click coordinates are in post-transform
+  // canvas space, but solveAffine + sN baking expects new points at sN * rawPixel positions.
+  // Fix: inverse-map new click points back to raw pixel coords, then scale by sN.
+  const existingXform = getPageTransform(currentPage);
+  if (existingXform && rawOld && rawNew) {
+    const ps0 = getPageScale(currentPage);
+    const sO0 = ps0.old / 100;
+    const wO0 = rawOld.width * sO0, hO0 = rawOld.height * sO0;
+    const sN0 = ps0.new / 100;
+
+    // Recompute canvas shift (same logic as composite's affine branch)
+    const corners = [[0,0],[rawNew.width,0],[0,rawNew.height],[rawNew.width,rawNew.height]];
+    let minX = 0, minY = 0, maxX = wO0, maxY = hO0;
+    corners.forEach(([px, py]) => {
+      const cx = existingXform.a * px + existingXform.b * py + existingXform.e;
+      const cy = existingXform.c * px + existingXform.d * py + existingXform.f;
+      maxX = Math.max(maxX, cx); maxY = Math.max(maxY, cy);
+      minX = Math.min(minX, cx); minY = Math.min(minY, cy);
+    });
+    const shiftX = minX < 0 ? -minX : 0;
+    const shiftY = minY < 0 ? -minY : 0;
+
+    // Invert existing xform's linear part to recover raw pixel coords from canvas coords
+    const det = existingXform.a * existingXform.d - existingXform.b * existingXform.c;
+    if (Math.abs(det) > 1e-10) {
+      newPts = align3PointsNew.map(pt => {
+        // Remove canvas shift to get xform-output coords
+        const nx = pt.x - shiftX;
+        const ny = pt.y - shiftY;
+        // Invert xform to get raw new-image pixel coords
+        const rawPx = (existingXform.d * (nx - existingXform.e) - existingXform.b * (ny - existingXform.f)) / det;
+        const rawPy = (-existingXform.c * (nx - existingXform.e) + existingXform.a * (ny - existingXform.f)) / det;
+        // Scale to sN * rawPixel (same space as first-time alignment)
+        return { x: rawPx * sN0, y: rawPy * sN0 };
+      });
+      // Remove canvas shift from old points so shift isn't double-counted
+      oldPts = align3PointsOld.map(pt => ({
+        x: pt.x - shiftX,
+        y: pt.y - shiftY
+      }));
+    }
+  }
+
+  let transform = solveAffine(newPts, oldPts);
   if (!transform) {
     alert('Points are collinear — pick non-collinear points.');
     cancelAlign3();
@@ -1881,7 +1929,7 @@ function computeAndApplyAlign3() {
   }
 
   // Snap tiny rotations (<1°) caused by imprecise clicking
-  transform = snapAffineRotation(transform, align3PointsNew, align3PointsOld);
+  transform = snapAffineRotation(transform, newPts, oldPts);
 
   // The affine was computed in output-canvas pixel coordinates, where the new image
   // was drawn at scale sN (pageScales.new/100). The linear part of the affine maps
