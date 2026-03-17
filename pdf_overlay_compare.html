@@ -305,10 +305,12 @@
     pointer-events: none; z-index: 3;
   }
   .overlay-draw-layer.drawing { pointer-events: auto; cursor: crosshair; }
+  .overlay-xhair-wrap {
+    position: sticky; top: 0; left: 0; height: 0; z-index: 14;
+    pointer-events: none; overflow: visible;
+  }
   .overlay-xhair-canvas {
-    position: sticky; top: 0; left: 0; width: 100%; height: 0;
-    pointer-events: none; z-index: 14;
-    display: block;
+    display: block; pointer-events: none;
   }
   .alpha-main-row { display: flex; align-items: center; gap: 6px; }
   .align3-overlay {
@@ -1023,7 +1025,9 @@ https://github.com/nodeca/pako/blob/main/LICENSE
   </div>
   <button class="thumb-toggle" id="thumb-toggle" onclick="toggleThumbs()" title="Toggle thumbnails">☰</button>
   <div class="canvas-area" id="canvas-area">
-    <canvas id="overlay-xhair" class="overlay-xhair-canvas"></canvas>
+    <div class="overlay-xhair-wrap" id="overlay-xhair-wrap">
+      <canvas id="overlay-xhair" class="overlay-xhair-canvas"></canvas>
+    </div>
     <div class="canvas-pad" id="canvas-pad">
       <div id="placeholder" class="placeholder-msg">
         <div class="icon">⬡</div>

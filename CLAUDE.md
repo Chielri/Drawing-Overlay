@@ -21,7 +21,7 @@ A single-file web application for comparing two PDF document revisions via color
 - **Per-page settings**: Offsets, scales, rotations, and affine transforms stored per page in `pageOffsets` / `pageScales` / `pageRotations` / `pageTransforms`
 - **3-point alignment**: Pick 3 matching points on old & new PDFs → raw affine transform stored directly (avoids decomposition errors). Decomposed values shown in UI for reference. Snaps rotation < 1° to 0°
 - **Drawing annotations**: Single annotation layer per page, rendered on both overlay and SBS panes. Supports pen, line, arrow, highlighter, rectangle, text, eraser tools with per-tool cursors
-- **Crosshair**: Toggleable crosshair overlay, RAF-throttled, uses viewport-sized canvas for performance
+- **Crosshair**: Toggleable crosshair overlay, RAF-throttled, viewport-sized canvas in sticky wrapper (not inside zoomed container) for performance. Suppressed during drag-to-pan
 - **LRU cache**: Rendered page ImageData cached with memory limit and eviction
 - **Thumbnails**: Show new document only, cached on upload, rebuilt when new PDF uploaded
 - **Presets**: Full settings (including PDF buffers as base64) saved/loaded as JSON, drag-and-drop JSON support
@@ -68,7 +68,7 @@ Edit files in `src/`, then rebuild.
 | Compositing | `composite()` (overlay with multiply/alpha + side-by-side), `recolorAndComposite()` (RAF-gated) |
 | Zoom/pan | `applyZoom()`, `doZoom()`, `zoomFit()`, drag handlers (IIFE scoped) |
 | Blend mode | `setBlendMode()`, `setAlphaMain()` — multiply vs alpha overlay |
-| Crosshair | `drawXhair()`, `clearXhair()`, `resizeXhair()` — RAF-throttled, viewport-sized canvas |
+| Crosshair | `drawXhair()`, `clearXhair()`, `_drawXhairImmediate()` — RAF-throttled, viewport-sized canvas, drag-suppressed |
 | Transform | `_applyScale()`, `applyOffset()`, `nudgeOffset()`, `applyRotation()` — clear affine on manual edit |
 | 3-Point Align | `startAlign3()`, `solveAffine()`, `snapAffineRotation()`, `computeAndApplyAlign3()` — stores raw affine |
 | Drawing | `initDrawing()`, `renderDrawLayer()`, `drawStrokeToCtx()`, `drawUndo()`, `drawClear()` — single layer per page |
@@ -82,7 +82,7 @@ Edit files in `src/`, then rebuild.
 - Rendering is gated through `requestAnimationFrame` via `_compositeScheduled` flag
 - Two reusable temp canvases (`_tmpCanvasA/B`) reduce GC pressure
 - Cache memory tracked incrementally via `_trackedCacheBytes`
-- Crosshair drawing is RAF-throttled (`_xhairRAF`) to prevent lag during pan/zoom
+- Crosshair drawing is RAF-throttled (`_xhairRAF`) and suppressed during drag (`_isDragging`). Overlay crosshair lives in a sticky wrapper inside `canvas-area` (not `canvas-container`) so the canvas buffer stays viewport-sized regardless of zoom level
 - 3-point alignment stores raw affine in `pageTransforms` — decomposed offset/scale/rotation shown in UI but rendering uses affine path directly. Manual edits to offset/scale/rotation clear the affine and switch to standard composite path
 - Drawing uses a single stroke list per page (`drawStrokes[pageNum]`), rendered on all visible canvases (overlay + both SBS panes)
 - Keyboard shortcuts: V=pan, P=pen, L=line, A=arrow, H=highlight, R=rect, T=text, E=eraser, Ctrl+Z=undo, Left/Right/PageUp/Down/Home/End for navigation, Escape cancels alignment
@@ -133,6 +133,12 @@ Edit files in `src/`, then rebuild.
 - **Size slider**: 1–20px range slider with throttled updates
 - **Text size slider**: 10–80px, stored per stroke as `textSize`
 - All strokes stored per page, rendered on all visible canvases
+
+## Planned Features
+
+- **Dimension line markup**: Draw dimension/leader lines with length labels on the canvas as annotation strokes
+- **Measure tool**: Click two points to measure the pixel distance between them, displayed as an on-canvas readout
+- **Calibrate measure tool**: Set a known real-world distance (e.g. "this segment = 10m") to convert pixel measurements into calibrated units (mm, cm, m, ft, etc.)
 
 ## Known Issues
 
