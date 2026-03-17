@@ -2237,15 +2237,36 @@ function updateSliderRange() {
 function applyOffset() {
   const x=parseFloat(DOM.offsetX.value)||0, y=parseFloat(DOM.offsetY.value)||0;
   syncSliders();
-  // Clear affine transform so manual offset takes effect via standard path
-  if (DOM.transformScope.value==='all') { for(let p=1;p<=maxPages;p++) { clearPageTransform(p); setPageOffset(p,x,y); } }
-  else { clearPageTransform(currentPage); setPageOffset(currentPage,x,y); }
+  const pages = DOM.transformScope.value==='all' ? Array.from({length:maxPages},(_,i)=>i+1) : [currentPage];
+  for (const p of pages) {
+    const xf = getPageTransform(p);
+    if (xf) {
+      // Update affine translation to match new offset, preserving the transform
+      const oldOff = getPageOffset(p);
+      xf.e += (x - oldOff.x); xf.f += (y - oldOff.y);
+      setPageTransform(p, xf);
+    } else {
+      clearPageTransform(p);
+    }
+    setPageOffset(p, x, y);
+  }
   if (rawOld||rawNew) recolorAndComposite();
 }
 function nudgeOffset(dx,dy) {
   const scope=DOM.transformScope.value;
-  if (scope==='all') { for(let p=1;p<=maxPages;p++){clearPageTransform(p);const o=getPageOffset(p);setPageOffset(p,o.x+dx,o.y+dy);} }
-  else { clearPageTransform(currentPage); const o=getPageOffset(currentPage); setPageOffset(currentPage,o.x+dx,o.y+dy); }
+  const pages = scope==='all' ? Array.from({length:maxPages},(_,i)=>i+1) : [currentPage];
+  for (const p of pages) {
+    const xf = getPageTransform(p);
+    if (xf) {
+      // Update affine translation directly so the transform is preserved
+      xf.e += dx; xf.f += dy;
+      setPageTransform(p, xf);
+    } else {
+      clearPageTransform(p);
+    }
+    const o = getPageOffset(p);
+    setPageOffset(p, o.x + dx, o.y + dy);
+  }
   loadOffsetUI();
   if (rawOld||rawNew) recolorAndComposite();
 }
