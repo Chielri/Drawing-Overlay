@@ -138,7 +138,7 @@ function debounce(fn, ms) { let t; return function(...a) { clearTimeout(t); t = 
 //  CACHE MEMORY LIMIT (incremental tracking)
 // ═══════════════════════════════════════
 function changeMemLimit() {
-  const v = Math.max(256, parseInt(DOM.memLimit.value) || 4096);
+  const v = Math.max(256, Math.min(131072, parseInt(DOM.memLimit.value) || 4096));
   cacheMemLimitMB = v;
   DOM.memLimitVal.textContent = v >= 1024 ? (v/1024).toFixed(1).replace(/\.0$/,'') + ' GB' : v + ' MB';
   let safety = lruOrder.length + 2;
