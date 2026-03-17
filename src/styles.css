@@ -279,6 +279,17 @@
   }
   .align3-point-dot.old { background: var(--blue); }
   .align3-point-dot.new { background: var(--red); }
+  /* Overlay mode draw layer + crosshair */
+  .overlay-draw-layer {
+    position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+    pointer-events: none; z-index: 3;
+  }
+  .overlay-draw-layer.drawing { pointer-events: auto; cursor: crosshair; }
+  .overlay-xhair-canvas {
+    position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+    pointer-events: none; z-index: 4;
+  }
+  .alpha-main-row { display: flex; align-items: center; gap: 6px; }
   .align3-overlay {
     position: absolute; top: 0; left: 0; width: 100%; height: 100%;
     pointer-events: none; z-index: 5;
