@@ -2021,10 +2021,27 @@ function inputScale() {
 function _applyScale() {
   const sO = parseFloat(DOM.inputScaleOld.value) || 100;
   const sN = parseFloat(DOM.inputScaleNew.value) || 100;
-  if (DOM.transformScope.value === 'all') {
-    for (let p = 1; p <= maxPages; p++) { clearPageTransform(p); setPageScale(p, sO, sN); }
-  } else {
-    clearPageTransform(currentPage); setPageScale(currentPage, sO, sN);
+  const pages = DOM.transformScope.value === 'all' ? Array.from({length:maxPages},(_,i)=>i+1) : [currentPage];
+  for (const p of pages) {
+    const xf = getPageTransform(p);
+    if (xf && rawNew) {
+      // Scale the affine's linear part proportionally, keeping center stable
+      const oldSN = getPageScale(p).new;
+      if (oldSN > 0) {
+        const ratio = sN / oldSN;
+        const imgW = rawNew.width, imgH = rawNew.height;
+        // Adjust translation so the image center stays in place
+        const cxBefore = xf.a * imgW/2 + xf.b * imgH/2;
+        const cyBefore = xf.c * imgW/2 + xf.d * imgH/2;
+        xf.a *= ratio; xf.b *= ratio; xf.c *= ratio; xf.d *= ratio;
+        xf.e += (1 - ratio) * cxBefore;
+        xf.f += (1 - ratio) * cyBefore;
+        setPageTransform(p, xf);
+      }
+    } else {
+      clearPageTransform(p);
+    }
+    setPageScale(p, sO, sN);
   }
   if (rawOld || rawNew) recolorAndComposite();
 }
@@ -2187,10 +2204,34 @@ function loadRotationUI() {
 }
 function applyRotation() {
   const deg = parseFloat(DOM.inputRotation.value) || 0;
-  if (DOM.transformScope.value === 'all') {
-    for (let p = 1; p <= maxPages; p++) { clearPageTransform(p); setPageRotation(p, deg); }
-  } else {
-    clearPageTransform(currentPage); setPageRotation(currentPage, deg);
+  const pages = DOM.transformScope.value === 'all' ? Array.from({length:maxPages},(_,i)=>i+1) : [currentPage];
+  for (const p of pages) {
+    const xf = getPageTransform(p);
+    if (xf && rawNew) {
+      // Compose rotation delta into the affine, rotating around the image center
+      const oldDeg = getPageRotation(p);
+      const deltaRad = (deg - oldDeg) * Math.PI / 180;
+      if (Math.abs(deltaRad) > 1e-10) {
+        const cosD = Math.cos(deltaRad), sinD = Math.sin(deltaRad);
+        const imgW = rawNew.width, imgH = rawNew.height;
+        // Center of transformed image (before shift)
+        const cxT = xf.a * imgW/2 + xf.b * imgH/2 + xf.e;
+        const cyT = xf.c * imgW/2 + xf.d * imgH/2 + xf.f;
+        // Rotate linear part: R(Δ) * [a b; c d]
+        const na = cosD * xf.a - sinD * xf.c;
+        const nb = cosD * xf.b - sinD * xf.d;
+        const nc = sinD * xf.a + cosD * xf.c;
+        const nd = sinD * xf.b + cosD * xf.d;
+        // Rotate translation around center
+        const ne = cosD * (xf.e - cxT) - sinD * (xf.f - cyT) + cxT;
+        const nf = sinD * (xf.e - cxT) + cosD * (xf.f - cyT) + cyT;
+        xf.a = na; xf.b = nb; xf.c = nc; xf.d = nd; xf.e = ne; xf.f = nf;
+        setPageTransform(p, xf);
+      }
+    } else {
+      clearPageTransform(p);
+    }
+    setPageRotation(p, deg);
   }
   if (rawOld || rawNew) recolorAndComposite();
 }
