@@ -66,6 +66,7 @@ const DOM = {
   align3Status: $('align3-status'), align3Start: $('align3-start'),
   align3Clear: $('align3-clear'), align3Points: $('align3-points'),
   align3Overlay: $('align3-overlay'),
+  jpegQuality: $('jpeg-quality'), jpegQualityVal: $('jpeg-quality-val'),
 };
 
 // ═══════════════════════════════════════
@@ -255,6 +256,8 @@ function applyDefaults(d) {
   DOM.inputScaleNew.value = d.scaleNew || 100;
   DOM.sliderScaleOld.value = Math.max(25, Math.min(200, d.scaleOld || 100));
   DOM.sliderScaleNew.value = Math.max(25, Math.min(200, d.scaleNew || 100));
+  DOM.jpegQuality.value = d.jpegQuality || 85;
+  updateJpegQuality();
   syncColors();
 }
 
@@ -268,7 +271,8 @@ function gatherUISettings() {
     transformScope: DOM.transformScope.value,
     thumbPPI, memLimitMB: cacheMemLimitMB,
     scaleOld: parseFloat(DOM.inputScaleOld.value) || 100,
-    scaleNew: parseFloat(DOM.inputScaleNew.value) || 100
+    scaleNew: parseFloat(DOM.inputScaleNew.value) || 100,
+    jpegQuality: parseInt(DOM.jpegQuality.value) || 85
   };
 }
 
@@ -1349,17 +1353,44 @@ function exportPNG() {
   const c = compositeWithAnnotations();
   c.toBlob(b=>{const a=document.createElement('a');a.href=URL.createObjectURL(b);a.download=`overlay-page-${currentPage}.png`;a.click();URL.revokeObjectURL(a.href);},'image/png');
 }
+// Convert canvas to a Uint8Array JPEG blob (avoids base64 bloat)
+function getJpegQuality() {
+  return (parseInt(DOM.jpegQuality.value) || 85) / 100;
+}
+function updateJpegQuality() {
+  DOM.jpegQualityVal.textContent = DOM.jpegQuality.value + '%';
+}
+
+function canvasToJpegArrayBuffer(canvas, quality) {
+  return new Promise(resolve => {
+    canvas.toBlob(blob => {
+      blob.arrayBuffer().then(buf => resolve(new Uint8Array(buf)));
+    }, 'image/jpeg', quality);
+  });
+}
+function canvasToPngArrayBuffer(canvas) {
+  return new Promise(resolve => {
+    canvas.toBlob(blob => {
+      blob.arrayBuffer().then(buf => resolve(new Uint8Array(buf)));
+    }, 'image/png');
+  });
+}
+
 async function exportPDF() {
   const out=DOM.canvasOutput; if(!out.width) return alert('Nothing to export.');
   if (!await _ensureJsPDF()) return;
   const JsPDF = _getJsPDF(), o=out.width>=out.height?'landscape':'portrait';
-  const pdf=new JsPDF({orientation:o,unit:'px',format:[out.width,out.height]});
-  // Base overlay as JPEG
-  pdf.addImage(out.toDataURL('image/jpeg',0.92),'JPEG',0,0,out.width,out.height);
+  const pdf=new JsPDF({orientation:o,unit:'px',format:[out.width,out.height],compress:true});
+  // Base overlay as JPEG (binary, not base64)
+  const jpegData = await canvasToJpegArrayBuffer(out, getJpegQuality());
+  pdf.addImage(jpegData,'JPEG',0,0,out.width,out.height,undefined,'FAST');
   // Annotations as separate transparent PNG layer
   const annotations = collectAnnotationsForPage(currentPage);
   const annCanvas = renderAnnotationsCanvas(annotations, out.width, out.height);
-  if (annCanvas) pdf.addImage(annCanvas.toDataURL('image/png'),'PNG',0,0,out.width,out.height);
+  if (annCanvas) {
+    const pngData = await canvasToPngArrayBuffer(annCanvas);
+    pdf.addImage(pngData,'PNG',0,0,out.width,out.height,undefined,'FAST');
+  }
   pdf.save(`overlay-page-${currentPage}.pdf`);
 }
 async function exportAllPDF() {
@@ -1373,14 +1404,18 @@ async function exportAllPDF() {
       btn.textContent=`${p}/${maxPages}…`; await sleep(30);
       currentPage=p; loadOffsetUI(); await renderPage(p);
       const c=DOM.canvasOutput, o=c.width>=c.height?'landscape':'portrait';
-      if(p===1) pdf=new JsPDF({orientation:o,unit:'px',format:[c.width,c.height]});
+      if(p===1) pdf=new JsPDF({orientation:o,unit:'px',format:[c.width,c.height],compress:true});
       else pdf.addPage([c.width,c.height],o);
-      // Base overlay as JPEG
-      pdf.addImage(c.toDataURL('image/jpeg',0.92),'JPEG',0,0,c.width,c.height);
+      // Base overlay as JPEG (binary, not base64)
+      const jpegData = await canvasToJpegArrayBuffer(c, getJpegQuality());
+      pdf.addImage(jpegData,'JPEG',0,0,c.width,c.height,undefined,'FAST');
       // Annotations as separate transparent PNG layer
       const annotations = collectAnnotationsForPage(p);
       const annCanvas = renderAnnotationsCanvas(annotations, c.width, c.height);
-      if (annCanvas) pdf.addImage(annCanvas.toDataURL('image/png'),'PNG',0,0,c.width,c.height);
+      if (annCanvas) {
+        const pngData = await canvasToPngArrayBuffer(annCanvas);
+        pdf.addImage(pngData,'PNG',0,0,c.width,c.height,undefined,'FAST');
+      }
     }
     pdf.save(`overlay-all-pages-${new Date().toISOString().slice(0,10)}.pdf`);
   } finally {

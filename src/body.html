@@ -194,6 +194,14 @@
         <button class="save-btn" onclick="exportPDF()">📄 PDF</button>
         <button class="save-btn" id="btn-export-all" onclick="exportAllPDF()">📦 All → PDF</button>
       </div>
+      <div class="control-row" style="margin-top:4px;">
+        <span class="control-label" style="font-size:11px;">JPEG Quality</span>
+        <span class="control-value" id="jpeg-quality-val">85%</span>
+      </div>
+      <div style="display:flex;align-items:center;gap:6px;">
+        <input type="range" id="jpeg-quality" min="50" max="98" value="85" oninput="updateJpegQuality()" style="flex:1;" />
+      </div>
+      <div class="offset-hint">Lower = smaller PDF. 70–85% is good for overlay comparison.</div>
       <div class="save-row" style="margin-top:8px;">
         <button class="save-btn" onclick="setAsDefault()">⚙ Set as Default</button>
         <button class="save-btn" onclick="resetToDefaults()" style="color:var(--red);">↺ Reset Defaults</button>
