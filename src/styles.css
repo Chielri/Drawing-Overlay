@@ -102,9 +102,6 @@
   .placeholder-msg p { font-size: 13px; line-height: 1.5; max-width: 360px; margin: 0 auto; }
   .zoom-bar { position: fixed; bottom: 14px; right: 14px; display: none; gap: 3px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; z-index: 20; }
   .zoom-bar.show { display: inline-flex; }
-  .zoom-btn { padding: 7px 11px; background: transparent; border: none; color: var(--text); font-size: 15px; cursor: pointer; }
-  .zoom-btn:hover { background: var(--surface2); }
-  .zoom-label { padding: 7px 4px; font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--text-dim); display: flex; align-items: center; }
   .mem-est { font-family: 'JetBrains Mono', monospace; font-size: 9px; color: var(--text-dim); text-align: center; margin-top: 2px; }
 
   /* Page go-to input */
@@ -189,14 +186,27 @@
   }
   .sbs-divider { width: 3px; flex-shrink: 0; background: var(--border); }
 
+  /* Bottom bar: combined toolbar + page nav */
+  .bottom-bar {
+    position: fixed; bottom: 14px; left: 50%; transform: translateX(-50%);
+    display: none; align-items: center; gap: 6px; z-index: 20;
+  }
+  .bottom-bar.show { display: inline-flex; }
+  .zoom-btn { padding: 7px 11px; background: transparent; border: none; color: var(--text); font-size: 15px; cursor: pointer; }
+  .zoom-btn:hover { background: var(--surface2); }
+  .zoom-label { padding: 7px 4px; font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--text-dim); display: flex; align-items: center; }
   /* Drawing toolbar */
   .draw-toolbar {
-    position: fixed; bottom: 14px; left: 50%; transform: translateX(-50%);
-    display: none; gap: 2px; align-items: center;
+    display: inline-flex; gap: 2px; align-items: center;
     background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
-    padding: 3px 6px; z-index: 20;
+    padding: 3px 6px;
   }
-  .draw-toolbar.show { display: inline-flex; }
+  /* Page nav bar in bottom bar */
+  .page-nav-bar {
+    display: inline-flex; align-items: center; gap: 6px;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+    padding: 3px 10px;
+  }
   .draw-tool-btn {
     padding: 5px 9px; background: transparent; border: 1px solid transparent;
     border-radius: 6px; color: var(--text-dim); font-size: 14px; cursor: pointer;
@@ -275,3 +285,14 @@
   }
   .align3-overlay.picking { pointer-events: auto; cursor: crosshair; }
   .canvas-container { position: relative; }
+
+  /* Collapsible cache section */
+  .collapsible-title {
+    cursor: pointer; user-select: none; display: flex; align-items: center; justify-content: space-between;
+  }
+  .collapsible-title:hover { color: var(--text); }
+  .cache-summary {
+    display: flex; align-items: center; justify-content: space-between;
+    font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--text-dim);
+    padding: 4px 0;
+  }
