@@ -106,13 +106,16 @@
 
   /* Page go-to input */
   .page-goto {
-    width: 38px; padding: 3px 2px; text-align: center;
+    width: 4ch; min-width: 3ch; max-width: 6ch; padding: 4px 6px; text-align: center;
     border: 1px solid var(--border); border-radius: 5px;
     background: var(--surface2); color: var(--text);
-    font-family: 'JetBrains Mono', monospace; font-size: 12px; outline: none;
+    font-family: 'JetBrains Mono', monospace; font-size: 13px; outline: none;
+    -moz-appearance: textfield;
   }
+  .page-goto::-webkit-inner-spin-button,
+  .page-goto::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
   .page-goto:focus { border-color: var(--blue); }
-  .page-total { font-family: 'JetBrains Mono', monospace; font-size: 12px; color: var(--text-dim); }
+  .page-total { font-family: 'JetBrains Mono', monospace; font-size: 13px; color: var(--text-dim); }
 
   /* Thumbnail panel */
   .thumb-panel {
@@ -203,9 +206,9 @@
   }
   /* Page nav bar in bottom bar */
   .page-nav-bar {
-    display: inline-flex; align-items: center; gap: 6px;
+    display: inline-flex; align-items: center; gap: 10px;
     background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
-    padding: 3px 10px;
+    padding: 4px 14px;
   }
   .draw-tool-btn {
     padding: 5px 9px; background: transparent; border: 1px solid transparent;

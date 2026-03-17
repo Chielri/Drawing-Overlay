@@ -897,10 +897,27 @@ function inputScale() {
 function _applyScale() {
   const sO = parseFloat(DOM.inputScaleOld.value) || 100;
   const sN = parseFloat(DOM.inputScaleNew.value) || 100;
-  if (DOM.transformScope.value === 'all') {
-    for (let p = 1; p <= maxPages; p++) { clearPageTransform(p); setPageScale(p, sO, sN); }
-  } else {
-    clearPageTransform(currentPage); setPageScale(currentPage, sO, sN);
+  const pages = DOM.transformScope.value === 'all' ? Array.from({length:maxPages},(_,i)=>i+1) : [currentPage];
+  for (const p of pages) {
+    const xf = getPageTransform(p);
+    if (xf && rawNew) {
+      // Scale the affine's linear part proportionally, keeping center stable
+      const oldSN = getPageScale(p).new;
+      if (oldSN > 0) {
+        const ratio = sN / oldSN;
+        const imgW = rawNew.width, imgH = rawNew.height;
+        // Adjust translation so the image center stays in place
+        const cxBefore = xf.a * imgW/2 + xf.b * imgH/2;
+        const cyBefore = xf.c * imgW/2 + xf.d * imgH/2;
+        xf.a *= ratio; xf.b *= ratio; xf.c *= ratio; xf.d *= ratio;
+        xf.e += (1 - ratio) * cxBefore;
+        xf.f += (1 - ratio) * cyBefore;
+        setPageTransform(p, xf);
+      }
+    } else {
+      clearPageTransform(p);
+    }
+    setPageScale(p, sO, sN);
   }
   if (rawOld || rawNew) recolorAndComposite();
 }
@@ -1063,10 +1080,34 @@ function loadRotationUI() {
 }
 function applyRotation() {
   const deg = parseFloat(DOM.inputRotation.value) || 0;
-  if (DOM.transformScope.value === 'all') {
-    for (let p = 1; p <= maxPages; p++) { clearPageTransform(p); setPageRotation(p, deg); }
-  } else {
-    clearPageTransform(currentPage); setPageRotation(currentPage, deg);
+  const pages = DOM.transformScope.value === 'all' ? Array.from({length:maxPages},(_,i)=>i+1) : [currentPage];
+  for (const p of pages) {
+    const xf = getPageTransform(p);
+    if (xf && rawNew) {
+      // Compose rotation delta into the affine, rotating around the image center
+      const oldDeg = getPageRotation(p);
+      const deltaRad = (deg - oldDeg) * Math.PI / 180;
+      if (Math.abs(deltaRad) > 1e-10) {
+        const cosD = Math.cos(deltaRad), sinD = Math.sin(deltaRad);
+        const imgW = rawNew.width, imgH = rawNew.height;
+        // Center of transformed image (before shift)
+        const cxT = xf.a * imgW/2 + xf.b * imgH/2 + xf.e;
+        const cyT = xf.c * imgW/2 + xf.d * imgH/2 + xf.f;
+        // Rotate linear part: R(Δ) * [a b; c d]
+        const na = cosD * xf.a - sinD * xf.c;
+        const nb = cosD * xf.b - sinD * xf.d;
+        const nc = sinD * xf.a + cosD * xf.c;
+        const nd = sinD * xf.b + cosD * xf.d;
+        // Rotate translation around center
+        const ne = cosD * (xf.e - cxT) - sinD * (xf.f - cyT) + cxT;
+        const nf = sinD * (xf.e - cxT) + cosD * (xf.f - cyT) + cyT;
+        xf.a = na; xf.b = nb; xf.c = nc; xf.d = nd; xf.e = ne; xf.f = nf;
+        setPageTransform(p, xf);
+      }
+    } else {
+      clearPageTransform(p);
+    }
+    setPageRotation(p, deg);
   }
   if (rawOld || rawNew) recolorAndComposite();
 }
@@ -1113,15 +1154,36 @@ function updateSliderRange() {
 function applyOffset() {
   const x=parseFloat(DOM.offsetX.value)||0, y=parseFloat(DOM.offsetY.value)||0;
   syncSliders();
-  // Clear affine transform so manual offset takes effect via standard path
-  if (DOM.transformScope.value==='all') { for(let p=1;p<=maxPages;p++) { clearPageTransform(p); setPageOffset(p,x,y); } }
-  else { clearPageTransform(currentPage); setPageOffset(currentPage,x,y); }
+  const pages = DOM.transformScope.value==='all' ? Array.from({length:maxPages},(_,i)=>i+1) : [currentPage];
+  for (const p of pages) {
+    const xf = getPageTransform(p);
+    if (xf) {
+      // Update affine translation to match new offset, preserving the transform
+      const oldOff = getPageOffset(p);
+      xf.e += (x - oldOff.x); xf.f += (y - oldOff.y);
+      setPageTransform(p, xf);
+    } else {
+      clearPageTransform(p);
+    }
+    setPageOffset(p, x, y);
+  }
   if (rawOld||rawNew) recolorAndComposite();
 }
 function nudgeOffset(dx,dy) {
   const scope=DOM.transformScope.value;
-  if (scope==='all') { for(let p=1;p<=maxPages;p++){clearPageTransform(p);const o=getPageOffset(p);setPageOffset(p,o.x+dx,o.y+dy);} }
-  else { clearPageTransform(currentPage); const o=getPageOffset(currentPage); setPageOffset(currentPage,o.x+dx,o.y+dy); }
+  const pages = scope==='all' ? Array.from({length:maxPages},(_,i)=>i+1) : [currentPage];
+  for (const p of pages) {
+    const xf = getPageTransform(p);
+    if (xf) {
+      // Update affine translation directly so the transform is preserved
+      xf.e += dx; xf.f += dy;
+      setPageTransform(p, xf);
+    } else {
+      clearPageTransform(p);
+    }
+    const o = getPageOffset(p);
+    setPageOffset(p, o.x + dx, o.y + dy);
+  }
   loadOffsetUI();
   if (rawOld||rawNew) recolorAndComposite();
 }
@@ -1138,6 +1200,7 @@ function resetOffset() {
 function updatePageNav() {
   DOM.pageGoto.value = currentPage;
   DOM.pageGoto.max = maxPages;
+  DOM.pageGoto.style.width = Math.max(3, String(maxPages).length + 1) + 'ch';
   DOM.pageTotal.textContent = maxPages;
   DOM.btnPrev.disabled = (currentPage<=1);
   DOM.btnNext.disabled = (currentPage>=maxPages);
@@ -1872,7 +1935,55 @@ function computeAndApplyAlign3() {
   // We want: where should we place the NEW image so that its points match the OLD image's points?
   // The old image stays fixed. We need a transform T such that T(newPt[i]) = oldPt[i]
   // i.e., new PDF pixels → position on the composite canvas matching old PDF coordinates
-  let transform = solveAffine(align3PointsNew, align3PointsOld);
+
+  let newPts = align3PointsNew;
+  let oldPts = align3PointsOld;
+
+  // If there's already an affine transform on this page (e.g. from a global alignment),
+  // the new image is displayed through that transform. Click coordinates are in post-transform
+  // canvas space, but solveAffine + sN baking expects new points at sN * rawPixel positions.
+  // Fix: inverse-map new click points back to raw pixel coords, then scale by sN.
+  const existingXform = getPageTransform(currentPage);
+  if (existingXform && rawOld && rawNew) {
+    const ps0 = getPageScale(currentPage);
+    const sO0 = ps0.old / 100;
+    const wO0 = rawOld.width * sO0, hO0 = rawOld.height * sO0;
+    const sN0 = ps0.new / 100;
+
+    // Recompute canvas shift (same logic as composite's affine branch)
+    const corners = [[0,0],[rawNew.width,0],[0,rawNew.height],[rawNew.width,rawNew.height]];
+    let minX = 0, minY = 0, maxX = wO0, maxY = hO0;
+    corners.forEach(([px, py]) => {
+      const cx = existingXform.a * px + existingXform.b * py + existingXform.e;
+      const cy = existingXform.c * px + existingXform.d * py + existingXform.f;
+      maxX = Math.max(maxX, cx); maxY = Math.max(maxY, cy);
+      minX = Math.min(minX, cx); minY = Math.min(minY, cy);
+    });
+    const shiftX = minX < 0 ? -minX : 0;
+    const shiftY = minY < 0 ? -minY : 0;
+
+    // Invert existing xform's linear part to recover raw pixel coords from canvas coords
+    const det = existingXform.a * existingXform.d - existingXform.b * existingXform.c;
+    if (Math.abs(det) > 1e-10) {
+      newPts = align3PointsNew.map(pt => {
+        // Remove canvas shift to get xform-output coords
+        const nx = pt.x - shiftX;
+        const ny = pt.y - shiftY;
+        // Invert xform to get raw new-image pixel coords
+        const rawPx = (existingXform.d * (nx - existingXform.e) - existingXform.b * (ny - existingXform.f)) / det;
+        const rawPy = (-existingXform.c * (nx - existingXform.e) + existingXform.a * (ny - existingXform.f)) / det;
+        // Scale to sN * rawPixel (same space as first-time alignment)
+        return { x: rawPx * sN0, y: rawPy * sN0 };
+      });
+      // Remove canvas shift from old points so shift isn't double-counted
+      oldPts = align3PointsOld.map(pt => ({
+        x: pt.x - shiftX,
+        y: pt.y - shiftY
+      }));
+    }
+  }
+
+  let transform = solveAffine(newPts, oldPts);
   if (!transform) {
     alert('Points are collinear — pick non-collinear points.');
     cancelAlign3();
@@ -1880,7 +1991,7 @@ function computeAndApplyAlign3() {
   }
 
   // Snap tiny rotations (<1°) caused by imprecise clicking
-  transform = snapAffineRotation(transform, align3PointsNew, align3PointsOld);
+  transform = snapAffineRotation(transform, newPts, oldPts);
 
   // The affine was computed in output-canvas pixel coordinates, where the new image
   // was drawn at scale sN (pageScales.new/100). The linear part of the affine maps
