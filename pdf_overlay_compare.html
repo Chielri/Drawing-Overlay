@@ -992,7 +992,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       <div style="display:flex;align-items:center;gap:6px;">
         <input type="range" id="jpeg-quality" min="50" max="98" value="85" oninput="updateJpegQuality()" style="flex:1;" />
       </div>
-      <div class="offset-hint">Lower = smaller PDF. 70–85% is good for overlay comparison.</div>
+      <div class="offset-hint">Auto-picks PNG or JPEG per page (whichever is smaller). PNG wins on line drawings; slider sets JPEG quality when JPEG wins.</div>
       <div class="save-row" style="margin-top:8px;">
         <button class="save-btn" onclick="setAsDefault()">⚙ Set as Default</button>
         <button class="save-btn" onclick="resetToDefaults()" style="color:var(--red);">↺ Reset Defaults</button>
@@ -2484,7 +2484,7 @@ function exportPNG() {
   const c = compositeWithAnnotations();
   c.toBlob(b=>{const a=document.createElement('a');a.href=URL.createObjectURL(b);a.download=`overlay-page-${currentPage}.png`;a.click();URL.revokeObjectURL(a.href);},'image/png');
 }
-// Convert canvas to a Uint8Array JPEG blob (avoids base64 bloat)
+// ── PDF Export compression helpers ──
 function getJpegQuality() {
   return (parseInt(DOM.jpegQuality.value) || 85) / 100;
 }
@@ -2492,19 +2492,32 @@ function updateJpegQuality() {
   DOM.jpegQualityVal.textContent = DOM.jpegQuality.value + '%';
 }
 
-function canvasToJpegArrayBuffer(canvas, quality) {
+function canvasToBlob(canvas, type, quality) {
   return new Promise(resolve => {
     canvas.toBlob(blob => {
       blob.arrayBuffer().then(buf => resolve(new Uint8Array(buf)));
-    }, 'image/jpeg', quality);
+    }, type, quality);
   });
 }
-function canvasToPngArrayBuffer(canvas) {
-  return new Promise(resolve => {
-    canvas.toBlob(blob => {
-      blob.arrayBuffer().then(buf => resolve(new Uint8Array(buf)));
-    }, 'image/png');
-  });
+
+// Auto-pick: generate both JPEG and PNG, return whichever is smaller.
+// PNG wins on technical drawings (large white areas deflate well);
+// JPEG wins on photo-heavy or noisy content.
+async function canvasToSmallestImage(canvas, jpegQuality) {
+  const [jpegData, pngData] = await Promise.all([
+    canvasToBlob(canvas, 'image/jpeg', jpegQuality),
+    canvasToBlob(canvas, 'image/png')
+  ]);
+  if (pngData.byteLength <= jpegData.byteLength) {
+    return { data: pngData, format: 'PNG' };
+  }
+  return { data: jpegData, format: 'JPEG' };
+}
+
+async function addCanvasImageToPdf(pdf, canvas, x, y, w, h) {
+  const img = await canvasToSmallestImage(canvas, getJpegQuality());
+  pdf.addImage(img.data, img.format, x, y, w, h, undefined, 'FAST');
+  return img;
 }
 
 async function exportPDF() {
@@ -2512,23 +2525,23 @@ async function exportPDF() {
   if (!await _ensureJsPDF()) return;
   const JsPDF = _getJsPDF(), o=out.width>=out.height?'landscape':'portrait';
   const pdf=new JsPDF({orientation:o,unit:'px',format:[out.width,out.height],compress:true});
-  // Base overlay as JPEG (binary, not base64)
-  const jpegData = await canvasToJpegArrayBuffer(out, getJpegQuality());
-  pdf.addImage(jpegData,'JPEG',0,0,out.width,out.height,undefined,'FAST');
+  // Base overlay — auto-picks PNG or JPEG (whichever is smaller)
+  const img = await addCanvasImageToPdf(pdf, out, 0, 0, out.width, out.height);
   // Annotations as separate transparent PNG layer
   const annotations = collectAnnotationsForPage(currentPage);
   const annCanvas = renderAnnotationsCanvas(annotations, out.width, out.height);
   if (annCanvas) {
-    const pngData = await canvasToPngArrayBuffer(annCanvas);
+    const pngData = await canvasToBlob(annCanvas, 'image/png');
     pdf.addImage(pngData,'PNG',0,0,out.width,out.height,undefined,'FAST');
   }
   pdf.save(`overlay-page-${currentPage}.pdf`);
+  console.log(`Export: ${img.format}, ${(img.data.byteLength/1048576).toFixed(1)} MB`);
 }
 async function exportAllPDF() {
   if(!rawOld&&!rawNew) return alert('Nothing to export.');
   if (!_ensureJsPDF()) return;
   const JsPDF = _getJsPDF(), btn=$('btn-export-all'), origText=btn.textContent;
-  let pdf=null;
+  let pdf=null, totalBytes=0;
   const savedPage=currentPage;
   try {
     for(let p=1;p<=maxPages;p++) {
@@ -2537,18 +2550,19 @@ async function exportAllPDF() {
       const c=DOM.canvasOutput, o=c.width>=c.height?'landscape':'portrait';
       if(p===1) pdf=new JsPDF({orientation:o,unit:'px',format:[c.width,c.height],compress:true});
       else pdf.addPage([c.width,c.height],o);
-      // Base overlay as JPEG (binary, not base64)
-      const jpegData = await canvasToJpegArrayBuffer(c, getJpegQuality());
-      pdf.addImage(jpegData,'JPEG',0,0,c.width,c.height,undefined,'FAST');
+      // Base overlay — auto-picks PNG or JPEG
+      const img = await addCanvasImageToPdf(pdf, c, 0, 0, c.width, c.height);
+      totalBytes += img.data.byteLength;
       // Annotations as separate transparent PNG layer
       const annotations = collectAnnotationsForPage(p);
       const annCanvas = renderAnnotationsCanvas(annotations, c.width, c.height);
       if (annCanvas) {
-        const pngData = await canvasToPngArrayBuffer(annCanvas);
+        const pngData = await canvasToBlob(annCanvas, 'image/png');
         pdf.addImage(pngData,'PNG',0,0,c.width,c.height,undefined,'FAST');
       }
     }
     pdf.save(`overlay-all-pages-${new Date().toISOString().slice(0,10)}.pdf`);
+    console.log(`Export all: ${maxPages} pages, ~${(totalBytes/1048576).toFixed(1)} MB image data`);
   } finally {
     currentPage=savedPage; loadOffsetUI(); await renderPage(savedPage); updatePageNav();
     btn.textContent=origText;

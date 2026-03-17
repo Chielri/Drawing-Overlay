@@ -201,7 +201,7 @@
       <div style="display:flex;align-items:center;gap:6px;">
         <input type="range" id="jpeg-quality" min="50" max="98" value="85" oninput="updateJpegQuality()" style="flex:1;" />
       </div>
-      <div class="offset-hint">Lower = smaller PDF. 70–85% is good for overlay comparison.</div>
+      <div class="offset-hint">Auto-picks PNG or JPEG per page (whichever is smaller). PNG wins on line drawings; slider sets JPEG quality when JPEG wins.</div>
       <div class="save-row" style="margin-top:8px;">
         <button class="save-btn" onclick="setAsDefault()">⚙ Set as Default</button>
         <button class="save-btn" onclick="resetToDefaults()" style="color:var(--red);">↺ Reset Defaults</button>
