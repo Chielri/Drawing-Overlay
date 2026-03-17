@@ -114,7 +114,7 @@
 
   /* Page go-to input */
   .page-goto {
-    width: 48px; padding: 4px 4px; text-align: center;
+    width: 4ch; min-width: 3ch; max-width: 6ch; padding: 4px 6px; text-align: center;
     border: 1px solid var(--border); border-radius: 5px;
     background: var(--surface2); color: var(--text);
     font-family: 'JetBrains Mono', monospace; font-size: 13px; outline: none;
@@ -2262,6 +2262,7 @@ function resetOffset() {
 function updatePageNav() {
   DOM.pageGoto.value = currentPage;
   DOM.pageGoto.max = maxPages;
+  DOM.pageGoto.style.width = Math.max(3, String(maxPages).length + 1) + 'ch';
   DOM.pageTotal.textContent = maxPages;
   DOM.btnPrev.disabled = (currentPage<=1);
   DOM.btnNext.disabled = (currentPage>=maxPages);

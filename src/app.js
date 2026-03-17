@@ -1138,6 +1138,7 @@ function resetOffset() {
 function updatePageNav() {
   DOM.pageGoto.value = currentPage;
   DOM.pageGoto.max = maxPages;
+  DOM.pageGoto.style.width = Math.max(3, String(maxPages).length + 1) + 'ch';
   DOM.pageTotal.textContent = maxPages;
   DOM.btnPrev.disabled = (currentPage<=1);
   DOM.btnNext.disabled = (currentPage>=maxPages);
