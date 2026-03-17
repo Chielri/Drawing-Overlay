@@ -47,7 +47,7 @@ const DOM = {
   drawToolbar: $('draw-toolbar'),
   drawColor: $('draw-color'), drawWidth: $('draw-width'),
   xhairColor: $('xhair-color'), xhairSize: $('xhair-size'),
-  xhairToggle: $('xhair-toggle'), drawTarget: $('draw-target'),
+  xhairToggle: $('xhair-toggle'),
   // Overlay drawing + crosshair
   overlayDrawLayer: $('overlay-draw-layer'), overlayXhair: $('overlay-xhair'),
   // Blend mode
@@ -114,9 +114,8 @@ let _sbsSyncLock = false; // prevents scroll-sync infinite loop
 
 // Drawing state
 let drawTool = 'pan'; // 'pan' | 'pen' | 'line' | 'arrow' | 'rect' | 'text'
-let drawStrokes = {}; // per-page-per-side arrays of stroke objects
+let drawStrokes = {}; // per-page arrays of stroke objects (single layer)
 let _drawCurrent = null; // in-progress stroke
-let drawTarget = 'both'; // 'old' | 'new' | 'both'
 
 // Blend mode state
 let blendMode = 'multiply'; // 'multiply' | 'alpha'
@@ -439,7 +438,11 @@ async function loadPdf(file, which) {
   if (which === 'old') pdfOld = pdf; else pdfNew = pdf;
   DOM.btnCompare.disabled = !(pdfOld && pdfNew);
   syncColors();
-  rebuildThumbsNow();
+  // Rebuild thumbnails only when new document is uploaded (thumbnails show new doc only)
+  if (which === 'new') {
+    maxPages = Math.max(pdfOld ? pdfOld.numPages : 0, pdfNew.numPages);
+    rebuildThumbsNow();
+  }
 }
 
 // ═══════════════════════════════════════
@@ -723,6 +726,9 @@ function composite(w, h, imgO, imgN) {
         maxX = Math.max(maxX, cx); maxY = Math.max(maxY, cy);
         minX = Math.min(minX, cx); minY = Math.min(minY, cy);
       });
+      // Shift everything so negative coords become positive
+      const shiftX = minX < 0 ? -minX : 0;
+      const shiftY = minY < 0 ? -minY : 0;
       const canvasW = Math.ceil(maxX - minX);
       const canvasH = Math.ceil(maxY - minY);
       out.width = canvasW; out.height = canvasH;
@@ -730,12 +736,12 @@ function composite(w, h, imgO, imgN) {
       ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, canvasW, canvasH);
 
       const drawOldLayer = () => {
-        if (imgO && visOld) { ctx.globalAlpha = aO; ctx.drawImage(putImgToTempCanvas(imgO, _tmpCanvasA, _tmpCtxA), 0, 0, imgO.width, imgO.height, 0, 0, wO, hO); }
+        if (imgO && visOld) { ctx.globalAlpha = aO; ctx.drawImage(putImgToTempCanvas(imgO, _tmpCanvasA, _tmpCtxA), 0, 0, imgO.width, imgO.height, shiftX, shiftY, wO, hO); }
       };
       const drawNewLayer = () => {
         if (imgN && visNew) {
           ctx.globalAlpha = aN; ctx.save();
-          ctx.setTransform(xform.a * sN, xform.c * sN, xform.b * sN, xform.d * sN, xform.e, xform.f);
+          ctx.setTransform(xform.a * sN, xform.c * sN, xform.b * sN, xform.d * sN, xform.e + shiftX, xform.f + shiftY);
           ctx.drawImage(putImgToTempCanvas(imgN, _tmpCanvasB, _tmpCtxB), 0, 0);
           ctx.restore();
         }
@@ -894,7 +900,6 @@ function _applyScale() {
     setPageScale(currentPage, sO, sN);
   }
   if (rawOld || rawNew) recolorAndComposite();
-  scheduleThumbRefresh();
 }
 function resetScale() {
   if (DOM.transformScope.value === 'all') {
@@ -904,7 +909,6 @@ function resetScale() {
   }
   loadScaleUI();
   if (rawOld || rawNew) recolorAndComposite();
-  scheduleThumbRefresh();
 }
 function matchScale() {
   const sN = parseInt(DOM.inputScaleNew.value) || 100;
@@ -915,41 +919,12 @@ function matchScale() {
   }
   loadScaleUI();
   if (rawOld || rawNew) recolorAndComposite();
-  scheduleThumbRefresh();
 }
 function setMode(m) {
-  const prevMode = mode;
   mode = m;
   DOM.modeOverlay.classList.toggle('active', m==='overlay');
   DOM.modeSidebyside.classList.toggle('active', m==='sidebyside');
-  // Sync drawings between modes
-  if (prevMode !== m && hasRenderedOnce) {
-    if (m === 'sidebyside') {
-      // overlay → side-by-side: duplicate overlay strokes to both panes
-      const keyOverlay = getDrawKey('overlay');
-      if (drawStrokes[keyOverlay] && drawStrokes[keyOverlay].length > 0) {
-        const keyOld = getDrawKey('old'), keyNew = getDrawKey('new');
-        if (!drawStrokes[keyOld]) drawStrokes[keyOld] = [];
-        if (!drawStrokes[keyNew]) drawStrokes[keyNew] = [];
-        drawStrokes[keyOverlay].forEach(s => {
-          const clonedOld = {...s};
-          if (clonedOld.pts) clonedOld.pts = clonedOld.pts.map(p => ({...p}));
-          const clonedNew = {...s};
-          if (clonedNew.pts) clonedNew.pts = clonedNew.pts.map(p => ({...p}));
-          drawStrokes[keyOld].push(clonedOld);
-          drawStrokes[keyNew].push(clonedNew);
-        });
-        drawStrokes[keyOverlay] = [];
-      }
-    } else {
-      // side-by-side → overlay: combine old+new strokes into overlay
-      const keyOld = getDrawKey('old'), keyNew = getDrawKey('new');
-      const keyOverlay = getDrawKey('overlay');
-      if (!drawStrokes[keyOverlay]) drawStrokes[keyOverlay] = [];
-      if (drawStrokes[keyOld]) { drawStrokes[keyOld].forEach(s => { const cloned = {...s}; if (cloned.pts) cloned.pts = cloned.pts.map(p => ({...p})); drawStrokes[keyOverlay].push(cloned); }); drawStrokes[keyOld] = []; }
-      if (drawStrokes[keyNew]) { drawStrokes[keyNew].forEach(s => { const cloned = {...s}; if (cloned.pts) cloned.pts = cloned.pts.map(p => ({...p})); drawStrokes[keyOverlay].push(cloned); }); drawStrokes[keyNew] = []; }
-    }
-  }
+  // Single stroke list shared between modes — no sync needed
   if (hasRenderedOnce) {
     if (m === 'sidebyside') {
       DOM.canvasPad.style.display = 'none';
@@ -988,9 +963,6 @@ function toggleXhair() {
   }
 }
 
-function setDrawTarget(target) {
-  drawTarget = target;
-}
 function toggleVis(which) {
   if (which==='old') visOld=!visOld; else visNew=!visNew;
   syncColors();
@@ -1067,7 +1039,6 @@ function resetAllTransforms() {
   }
   loadTransformUI();
   if (rawOld || rawNew) recolorAndComposite();
-  scheduleThumbRefresh();
 }
 
 // -- Scale --
@@ -1095,14 +1066,12 @@ function applyRotation() {
     setPageRotation(currentPage, deg);
   }
   if (rawOld || rawNew) recolorAndComposite();
-  scheduleThumbRefresh();
 }
 function resetRotation() {
   if (DOM.transformScope.value === 'all') pageRotations = {};
   else delete pageRotations[String(currentPage)];
   loadRotationUI();
   if (rawOld || rawNew) recolorAndComposite();
-  scheduleThumbRefresh();
 }
 
 // -- Translation (offset) --
@@ -1145,7 +1114,6 @@ function applyOffset() {
   else setPageOffset(currentPage,x,y);
   // FIX: rAF-gated — slider fires 60+ Hz, but we render max once/frame
   if (rawOld||rawNew) recolorAndComposite();
-  scheduleThumbRefresh();
 }
 function nudgeOffset(dx,dy) {
   const scope=DOM.transformScope.value;
@@ -1153,14 +1121,12 @@ function nudgeOffset(dx,dy) {
   else { const o=getPageOffset(currentPage); setPageOffset(currentPage,o.x+dx,o.y+dy); }
   loadOffsetUI();
   if (rawOld||rawNew) recolorAndComposite();
-  scheduleThumbRefresh();
 }
 function resetOffset() {
   if (DOM.transformScope.value==='all') pageOffsets={};
   else delete pageOffsets[String(currentPage)];
   loadOffsetUI();
   if (rawOld||rawNew) recolorAndComposite();
-  scheduleThumbRefresh();
 }
 
 // ═══════════════════════════════════════
@@ -1284,12 +1250,8 @@ function _ensureJsPDF() {
 
 // Collect all annotation strokes for the current page (from all sides)
 function collectAnnotationsForPage(page) {
-  const all = [];
-  ['overlay', 'old', 'new'].forEach(side => {
-    const key = page + '_' + side;
-    if (drawStrokes[key]) all.push(...drawStrokes[key]);
-  });
-  return all;
+  const key = String(page);
+  return drawStrokes[key] ? [...drawStrokes[key]] : [];
 }
 
 // Render annotations to a temp canvas matching the output canvas size
@@ -1502,16 +1464,18 @@ async function exportAllPNG() {
 })();
 
 // ── Crosshair drawing utilities (global scope) ──
-function resizeXhair(canvas, pane) {
-  const w = pane.clientWidth, h = pane.clientHeight;
+let _xhairRAF = 0;
+let _xhairPending = null;
+
+function resizeXhair(canvas, w, h) {
   if (canvas.width !== w || canvas.height !== h) {
     canvas.width = w; canvas.height = h;
   }
 }
-function drawXhair(canvas, x, y) {
-  resizeXhair(canvas, canvas.parentElement);
+function _drawXhairImmediate(canvas, x, y, w, h) {
+  resizeXhair(canvas, w, h);
   const ctx = canvas.getContext('2d');
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.clearRect(0, 0, w, h);
   if (x < 0) return;
   const color = DOM.xhairColor.value;
   const sz = parseInt(DOM.xhairSize.value);
@@ -1522,20 +1486,40 @@ function drawXhair(canvas, x, y) {
   ctx.lineWidth = lw + 2;
   ctx.setLineDash(dash);
   ctx.beginPath();
-  ctx.moveTo(x, 0); ctx.lineTo(x, canvas.height);
-  ctx.moveTo(0, y); ctx.lineTo(canvas.width, y);
+  ctx.moveTo(x, 0); ctx.lineTo(x, h);
+  ctx.moveTo(0, y); ctx.lineTo(w, y);
   ctx.stroke();
   ctx.strokeStyle = color;
   ctx.lineWidth = lw;
   ctx.beginPath();
-  ctx.moveTo(x, 0); ctx.lineTo(x, canvas.height);
-  ctx.moveTo(0, y); ctx.lineTo(canvas.width, y);
+  ctx.moveTo(x, 0); ctx.lineTo(x, h);
+  ctx.moveTo(0, y); ctx.lineTo(w, y);
   ctx.stroke();
   ctx.setLineDash([]);
   ctx.fillStyle = 'rgba(0,0,0,0.5)';
   ctx.beginPath(); ctx.arc(x, y, dotR + 1, 0, Math.PI * 2); ctx.fill();
   ctx.fillStyle = color;
   ctx.beginPath(); ctx.arc(x, y, dotR, 0, Math.PI * 2); ctx.fill();
+}
+function drawXhair(canvas, x, y) {
+  // Use viewport dimensions for crosshair canvas (not full zoomed size)
+  const pane = canvas.parentElement;
+  const w = pane.clientWidth, h = pane.clientHeight;
+  // Throttle via RAF to avoid excessive redraws during pan/zoom
+  if (!_xhairRAF) {
+    _xhairRAF = requestAnimationFrame(() => {
+      _xhairRAF = 0;
+      if (_xhairPending) {
+        _xhairPending.forEach(p => _drawXhairImmediate(p.canvas, p.x, p.y, p.w, p.h));
+        _xhairPending = null;
+      }
+    });
+  }
+  if (!_xhairPending) _xhairPending = [];
+  // Replace any pending draw for same canvas
+  const idx = _xhairPending.findIndex(p => p.canvas === canvas);
+  if (idx >= 0) _xhairPending[idx] = { canvas, x, y, w, h };
+  else _xhairPending.push({ canvas, x, y, w, h });
 }
 function clearXhair(canvas) {
   const ctx = canvas.getContext('2d');
@@ -1593,37 +1577,17 @@ DOM.thumbScroll.addEventListener('click', e => {
 });
 
 async function renderThumbPage(pageNum) {
-  const renderOne = async (pdf, num) => {
-    if (!pdf || num > pdf.numPages) return null;
-    const page = await pdf.getPage(num);
-    const vp = page.getViewport({ scale: getThumbScale() });
-    const c = document.createElement('canvas');
-    c.width = vp.width; c.height = vp.height;
-    const ctx = c.getContext('2d');
-    ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, vp.width, vp.height);
-    await page.render({ canvasContext: ctx, viewport: vp }).promise;
-    return c;
-  };
-  const cOld = await renderOne(pdfOld, pageNum);
-  const cNew = await renderOne(pdfNew, pageNum);
-  const w = Math.max(cOld ? cOld.width : 0, cNew ? cNew.width : 0);
-  const h = Math.max(cOld ? cOld.height : 0, cNew ? cNew.height : 0);
-  if (w === 0 || h === 0) {
-    if (cOld) { cOld.width = 0; cOld.height = 0; }
-    if (cNew) { cNew.width = 0; cNew.height = 0; }
-    return null;
-  }
-  const out = document.createElement('canvas');
-  out.width = w; out.height = h;
-  const ctx = out.getContext('2d');
-  ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, w, h);
-  if (cOld) { ctx.globalAlpha = 0.5; ctx.drawImage(cOld, 0, 0); }
-  if (cNew) { ctx.globalAlpha = 0.5; ctx.drawImage(cNew, 0, 0); }
-  ctx.globalAlpha = 1;
-  const dataUrl = out.toDataURL('image/jpeg', 0.5);
-  out.width = 0; out.height = 0;
-  if (cOld) { cOld.width = 0; cOld.height = 0; }
-  if (cNew) { cNew.width = 0; cNew.height = 0; }
+  // Render only the new document for thumbnails
+  if (!pdfNew || pageNum > pdfNew.numPages) return null;
+  const page = await pdfNew.getPage(pageNum);
+  const vp = page.getViewport({ scale: getThumbScale() });
+  const c = document.createElement('canvas');
+  c.width = vp.width; c.height = vp.height;
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, vp.width, vp.height);
+  await page.render({ canvasContext: ctx, viewport: vp }).promise;
+  const dataUrl = c.toDataURL('image/jpeg', 0.5);
+  c.width = 0; c.height = 0;
   return dataUrl;
 }
 
@@ -1659,15 +1623,6 @@ function rebuildThumbsNow() {
   if (thumbPanelOpen && maxPages > 0) buildThumbSlots();
 }
 
-function scheduleThumbRefresh() {
-  if (thumbTimer) clearTimeout(thumbTimer);
-  thumbTimer = setTimeout(() => {
-    thumbTimer = null;
-    thumbGeneration++;
-    thumbDataUrls = {};
-    if (thumbPanelOpen && maxPages > 0) buildThumbSlots();
-  }, 30000);
-}
 
 function clearThumbCache() {
   thumbGeneration++;
@@ -1726,7 +1681,6 @@ function clearAlign3() {
   cancelAlign3();
   loadTransformUI();
   if (rawOld || rawNew) recolorAndComposite();
-  scheduleThumbRefresh();
 }
 
 function updateAlign3UI() {
@@ -1743,7 +1697,7 @@ function updateAlign3UI() {
     el.className = 'align3-status';
     DOM.align3Clear.style.display = 'none';
   } else if (!align3Active && hasTransform) {
-    el.textContent = 'Alignment applied — values shown in Scale/Translation/Rotation.';
+    el.textContent = 'Alignment applied via affine transform.';
     el.className = 'align3-status done';
     DOM.align3Clear.style.display = '';
   } else if (align3Phase === 'old') {
@@ -1927,46 +1881,20 @@ function computeAndApplyAlign3() {
   // Snap tiny rotations (<1°) caused by imprecise clicking
   transform = snapAffineRotation(transform, align3PointsNew, align3PointsOld);
 
-  // Decompose affine into rotation, scale, and translation
-  const rotRad = Math.atan2(transform.c, transform.a);
-  const rotDeg = Math.round(rotRad * 180 / Math.PI * 100) / 100;
-  const sx = Math.sqrt(transform.a * transform.a + transform.c * transform.c);
-  const sy = Math.sqrt(transform.b * transform.b + transform.d * transform.d);
-  let uniformScale = (sx + sy) / 2;
-
-  // Snap scale to 100% if change is less than 1%
-  if (Math.abs(uniformScale - 1) < 0.01) uniformScale = 1;
-
-  // Compute new per-layer scale
-  const ps = getPageScale(currentPage);
-  const sN = ps.new / 100;
-  const sN_new = sN * uniformScale;
-  const scaleNewPercent = Math.round(ps.new * uniformScale * 10) / 10;
-
-  // Compute offset from affine translation, accounting for rotation around image center
-  // Standard composite path: pixel (px,py) → rotate around center → place at offset
-  //   canvas = R * (sN_new * pixel - center) + (offset + center)
-  // Affine: canvas = [[a,b],[c,d]] * sN * pixel + (e, f)
-  // Matching constants: offset = (e,f) + R*center - center  where center = (wN_new/2, hN_new/2)
-  const imgW = rawNew.width, imgH = rawNew.height;
-  const wN_new = imgW * sN_new, hN_new = imgH * sN_new;
-  const cosR = Math.cos(rotRad), sinR = Math.sin(rotRad);
-  const cx = wN_new / 2, cy = hN_new / 2;
-  const ox = Math.round((transform.e + cosR * cx - sinR * cy - cx) * 10) / 10;
-  const oy = Math.round((transform.f + sinR * cx + cosR * cy - cy) * 10) / 10;
-
-  // Apply decomposed values to offset/scale/rotation (not raw affine)
+  // Store the raw affine transform directly — avoids decomposition errors
+  // The affine composite path uses this to correctly place the new image
   const scope = DOM.transformScope.value;
   if (scope === 'all') {
     for (let p = 1; p <= maxPages; p++) {
-      setPageOffset(p, ox, oy);
-      setPageRotation(p, rotDeg);
-      setPageScale(p, ps.old, scaleNewPercent);
+      setPageTransform(p, { ...transform });
+      // Reset manual offset/rotation so affine path is used cleanly
+      setPageOffset(p, 0, 0);
+      setPageRotation(p, 0);
     }
   } else {
-    setPageOffset(currentPage, ox, oy);
-    setPageRotation(currentPage, rotDeg);
-    setPageScale(currentPage, ps.old, scaleNewPercent);
+    setPageTransform(currentPage, { ...transform });
+    setPageOffset(currentPage, 0, 0);
+    setPageRotation(currentPage, 0);
   }
 
   // End picking mode — clear markers since alignment is applied to offset/scale/rotation
@@ -1982,7 +1910,6 @@ function computeAndApplyAlign3() {
 
   // Re-render with decomposed transform values
   if (rawOld || rawNew) recolorAndComposite();
-  scheduleThumbRefresh();
 }
 
 // ═══════════════════════════════════════
@@ -2041,10 +1968,10 @@ function setDrawTool(tool) {
   DOM.overlayDrawLayer.classList.toggle('drawing', tool !== 'pan');
 }
 
-function getDrawKey(side) { return currentPage + '_' + side; }
+function getDrawKey() { return String(currentPage); }
 
-function drawStrokesFor(side) {
-  const key = getDrawKey(side);
+function drawStrokesFor() {
+  const key = getDrawKey();
   if (!drawStrokes[key]) drawStrokes[key] = [];
   return drawStrokes[key];
 }
@@ -2081,9 +2008,9 @@ function renderDrawLayer(side) {
   }
   const ctx = canvas.getContext('2d');
   ctx.clearRect(0, 0, canvas.width, canvas.height);
-  const strokes = drawStrokesFor(side);
+  const strokes = drawStrokesFor();
   strokes.forEach(s => drawStrokeToCtx(ctx, s));
-  if (_drawCurrent && _drawCurrent.side === side) {
+  if (_drawCurrent) {
     drawStrokeToCtx(ctx, _drawCurrent);
   }
 }
@@ -2183,68 +2110,83 @@ function distToSegment2(px, py, x1, y1, x2, y2) {
 }
 
 // Wire up drawing on SBS draw layers
-function initDrawLayer(drawCanvas, scrollPane, side) {
+function initDrawing() {
   let drawing = false;
+  let drawSide = null; // which canvas initiated the draw
 
-  // For SBS: determine which sides to actually draw on based on drawTarget
-  function getTargetSides() {
-    if (side === 'overlay') return ['overlay'];
-    if (drawTarget === 'both') return ['old', 'new'];
-    return [drawTarget];
-  }
-  // For SBS: should this canvas accept input?
-  function shouldAcceptInput() {
-    if (side === 'overlay') return mode === 'overlay';
-    if (mode !== 'sidebyside') return false;
-    return drawTarget === 'both' || drawTarget === side;
+  function getActiveCanvas() {
+    if (mode === 'overlay') return { canvas: DOM.overlayDrawLayer, scroll: DOM.canvasArea };
+    // In SBS, use the new pane as the drawing surface
+    return { canvas: DOM.sbsDrawNew, scroll: DOM.sbsScrollNew };
   }
 
-  drawCanvas.addEventListener('mousedown', e => {
-    if (drawTool === 'pan' || e.button !== 0) return;
-    if (!shouldAcceptInput()) return;
-    e.preventDefault(); e.stopPropagation();
-    const pos = clientToCanvas(e, scrollPane, drawCanvas);
-    const color = DOM.drawColor.value;
-    const width = parseInt(DOM.drawWidth.value);
-
-    if (drawTool === 'text') {
-      const text = prompt('Enter text:');
-      if (text) {
-        getTargetSides().forEach(s => {
-          drawStrokesFor(s).push({ tool: 'text', x1: pos.x, y1: pos.y, color, width, text });
-          renderDrawLayer(s);
-        });
-      }
-      return;
-    }
-
-    if (drawTool === 'eraser') {
-      drawing = true;
-      _drawCurrent = { tool: 'eraser', pts: [pos], width, side, targets: getTargetSides() };
-      return;
-    }
-
-    drawing = true;
-    if (drawTool === 'pen' || drawTool === 'highlight') {
-      _drawCurrent = { tool: drawTool, pts: [pos], color, width, side, targets: getTargetSides() };
+  function renderAllDrawLayers() {
+    if (mode === 'overlay') {
+      renderDrawLayer('overlay');
     } else {
-      _drawCurrent = { tool: drawTool, x1: pos.x, y1: pos.y, x2: null, y2: null, color, width, side, targets: getTargetSides() };
+      renderDrawLayer('old');
+      renderDrawLayer('new');
     }
+  }
+
+  // Accept drawing input from overlay layer, or either SBS pane
+  [
+    { canvas: DOM.overlayDrawLayer, scroll: DOM.canvasArea, side: 'overlay' },
+    { canvas: DOM.sbsDrawOld, scroll: DOM.sbsScrollOld, side: 'old' },
+    { canvas: DOM.sbsDrawNew, scroll: DOM.sbsScrollNew, side: 'new' }
+  ].forEach(({ canvas: drawCanvas, scroll: scrollPane, side }) => {
+    drawCanvas.addEventListener('mousedown', e => {
+      if (drawTool === 'pan' || e.button !== 0) return;
+      if (side === 'overlay' && mode !== 'overlay') return;
+      if (side !== 'overlay' && mode !== 'sidebyside') return;
+      e.preventDefault(); e.stopPropagation();
+      drawSide = side;
+      const pos = clientToCanvas(e, scrollPane, drawCanvas);
+      const color = DOM.drawColor.value;
+      const width = parseInt(DOM.drawWidth.value);
+
+      if (drawTool === 'text') {
+        const text = prompt('Enter text:');
+        if (text) {
+          drawStrokesFor().push({ tool: 'text', x1: pos.x, y1: pos.y, color, width, text });
+          renderAllDrawLayers();
+        }
+        drawSide = null;
+        return;
+      }
+
+      if (drawTool === 'eraser') {
+        drawing = true;
+        _drawCurrent = { tool: 'eraser', pts: [pos], width };
+        return;
+      }
+
+      drawing = true;
+      if (drawTool === 'pen' || drawTool === 'highlight') {
+        _drawCurrent = { tool: drawTool, pts: [pos], color, width };
+      } else {
+        _drawCurrent = { tool: drawTool, x1: pos.x, y1: pos.y, x2: null, y2: null, color, width };
+      }
+    });
   });
 
   window.addEventListener('mousemove', e => {
-    if (!drawing || !_drawCurrent || _drawCurrent.side !== side) return;
-    const pos = clientToCanvas(e, scrollPane, drawCanvas);
+    if (!drawing || !_drawCurrent || !drawSide) return;
+    // Use the canvas that initiated the draw
+    const { canvas, scroll } = drawSide === 'overlay'
+      ? { canvas: DOM.overlayDrawLayer, scroll: DOM.canvasArea }
+      : drawSide === 'old'
+        ? { canvas: DOM.sbsDrawOld, scroll: DOM.sbsScrollOld }
+        : { canvas: DOM.sbsDrawNew, scroll: DOM.sbsScrollNew };
+    const pos = clientToCanvas(e, scroll, canvas);
     if (_drawCurrent.tool === 'eraser') {
       _drawCurrent.pts.push(pos);
       const eraserR = Math.max(_drawCurrent.width * 5, 10);
-      _drawCurrent.targets.forEach(s => {
-        const strokes = drawStrokesFor(s);
-        for (let i = strokes.length - 1; i >= 0; i--) {
-          if (strokeHitsPoint(strokes[i], pos.x, pos.y, eraserR)) strokes.splice(i, 1);
-        }
-        renderDrawLayer(s);
-      });
+      const strokes = drawStrokesFor();
+      for (let i = strokes.length - 1; i >= 0; i--) {
+        if (strokeHitsPoint(strokes[i], pos.x, pos.y, eraserR)) strokes.splice(i, 1);
+      }
+      renderAllDrawLayers();
       return;
     }
     if (_drawCurrent.tool === 'pen' || _drawCurrent.tool === 'highlight') {
@@ -2253,11 +2195,11 @@ function initDrawLayer(drawCanvas, scrollPane, side) {
       _drawCurrent.x2 = pos.x;
       _drawCurrent.y2 = pos.y;
     }
-    _drawCurrent.targets.forEach(s => renderDrawLayer(s));
+    renderAllDrawLayers();
   });
 
   window.addEventListener('mouseup', () => {
-    if (!drawing || !_drawCurrent || _drawCurrent.side !== side) return;
+    if (!drawing || !_drawCurrent) return;
     drawing = false;
     const s = _drawCurrent;
     let valid = false;
@@ -2266,47 +2208,31 @@ function initDrawLayer(drawCanvas, scrollPane, side) {
     if (s.tool === 'eraser') valid = false;
     if (valid) {
       const saved = { ...s };
-      delete saved.side; delete saved.targets;
-      s.targets.forEach(t => { const cloned = {...saved}; if (cloned.pts) cloned.pts = cloned.pts.map(p => ({...p})); drawStrokesFor(t).push(cloned); });
+      if (saved.pts) saved.pts = saved.pts.map(p => ({...p}));
+      drawStrokesFor().push(saved);
     }
     _drawCurrent = null;
-    s.targets.forEach(t => renderDrawLayer(t));
+    drawSide = null;
+    renderAllDrawLayers();
   });
 }
 
-initDrawLayer(DOM.sbsDrawOld, DOM.sbsScrollOld, 'old');
-initDrawLayer(DOM.sbsDrawNew, DOM.sbsScrollNew, 'new');
-initDrawLayer(DOM.overlayDrawLayer, DOM.canvasArea, 'overlay');
+initDrawing();
 DOM.sbsDrawOld.addEventListener('contextmenu', e => e.preventDefault());
 DOM.sbsDrawNew.addEventListener('contextmenu', e => e.preventDefault());
 DOM.overlayDrawLayer.addEventListener('contextmenu', e => e.preventDefault());
 
 function drawUndo() {
-  if (mode === 'overlay') {
-    const key = getDrawKey('overlay');
-    if (drawStrokes[key] && drawStrokes[key].length > 0) {
-      drawStrokes[key].pop(); renderDrawLayer('overlay');
-    }
-  } else {
-    // SBS: undo from the target sides
-    const sides = drawTarget === 'both' ? ['old', 'new'] : [drawTarget];
-    sides.forEach(s => {
-      const key = getDrawKey(s);
-      if (drawStrokes[key] && drawStrokes[key].length > 0) {
-        drawStrokes[key].pop(); renderDrawLayer(s);
-      }
-    });
+  const key = getDrawKey();
+  if (drawStrokes[key] && drawStrokes[key].length > 0) {
+    drawStrokes[key].pop();
+    if (mode === 'overlay') renderDrawLayer('overlay');
+    else { renderDrawLayer('old'); renderDrawLayer('new'); }
   }
 }
 
 function drawClear() {
-  if (mode === 'overlay') {
-    drawStrokes[getDrawKey('overlay')] = [];
-    renderDrawLayer('overlay');
-  } else {
-    drawStrokes[getDrawKey('old')] = [];
-    drawStrokes[getDrawKey('new')] = [];
-    renderDrawLayer('old');
-    renderDrawLayer('new');
-  }
+  drawStrokes[getDrawKey()] = [];
+  if (mode === 'overlay') renderDrawLayer('overlay');
+  else { renderDrawLayer('old'); renderDrawLayer('new'); }
 }
