@@ -226,6 +226,18 @@
     background: var(--surface2); color: var(--text); font-family: 'JetBrains Mono', monospace;
     font-size: 10px; cursor: pointer; outline: none;
   }
+  .draw-slider {
+    width: 60px; height: 4px; accent-color: var(--blue); cursor: pointer;
+    -webkit-appearance: none; background: var(--surface2); border-radius: 2px; outline: none;
+  }
+  .draw-slider::-webkit-slider-thumb {
+    -webkit-appearance: none; width: 12px; height: 12px; border-radius: 50%;
+    background: var(--blue); cursor: pointer;
+  }
+  .draw-slider-val {
+    font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--text-dim);
+    min-width: 16px; text-align: center;
+  }
   .draw-group-label {
     font-size: 9px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px;
     color: var(--text-dim); white-space: nowrap;

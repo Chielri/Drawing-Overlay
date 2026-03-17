@@ -288,12 +288,12 @@
     <button class="draw-tool-btn" id="draw-tool-eraser" onclick="setDrawTool('eraser')" title="Eraser (E)">⌫</button>
     <span class="draw-sep"></span>
     <input type="color" class="draw-color-pick" id="draw-color" value="#ff1744" title="Stroke color" />
-    <select class="draw-width-pick" id="draw-width" title="Stroke width">
-      <option value="1">1px</option>
-      <option value="2" selected>2px</option>
-      <option value="3">3px</option>
-      <option value="5">5px</option>
-    </select>
+    <span class="draw-group-label">Size</span>
+    <input type="range" class="draw-slider" id="draw-width" min="1" max="20" value="2" oninput="updateDrawWidth()" title="Stroke width" />
+    <span class="draw-slider-val" id="draw-width-val">2</span>
+    <span class="draw-group-label">Text</span>
+    <input type="range" class="draw-slider" id="draw-text-size" min="10" max="80" value="24" oninput="updateTextSize()" title="Text size" />
+    <span class="draw-slider-val" id="draw-text-size-val">24</span>
     <span class="draw-sep"></span>
     <span class="draw-group-label">Cursor</span>
     <button class="draw-tool-btn active" id="xhair-toggle" onclick="toggleXhair()" title="Toggle crosshair">+</button>

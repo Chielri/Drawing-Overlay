@@ -45,7 +45,8 @@ const DOM = {
   sbsXhairOld: $('sbs-xhair-old'), sbsXhairNew: $('sbs-xhair-new'),
   sbsDrawOld: $('sbs-draw-old'), sbsDrawNew: $('sbs-draw-new'),
   drawToolbar: $('draw-toolbar'),
-  drawColor: $('draw-color'), drawWidth: $('draw-width'),
+  drawColor: $('draw-color'), drawWidth: $('draw-width'), drawWidthVal: $('draw-width-val'),
+  drawTextSize: $('draw-text-size'), drawTextSizeVal: $('draw-text-size-val'),
   xhairColor: $('xhair-color'), xhairSize: $('xhair-size'),
   xhairToggle: $('xhair-toggle'),
   // Overlay drawing + crosshair
@@ -1949,14 +1950,23 @@ function syncDrawLayerSize(side) {
   draw.style.width = src.style.width;
   draw.style.height = src.style.height;
 }
+// Cursor map per tool
+const _toolCursors = {
+  pan: 'grab', pen: 'crosshair', line: 'crosshair', arrow: 'crosshair',
+  highlight: 'url("data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' width=\'24\' height=\'24\' viewBox=\'0 0 24 24\'%3E%3Crect x=\'5\' y=\'8\' width=\'14\' height=\'8\' fill=\'%23ffeb3b\' opacity=\'0.5\' rx=\'1\'/%3E%3C/svg%3E") 12 12, crosshair',
+  rect: 'crosshair',
+  text: 'text',
+  eraser: 'url("data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' width=\'20\' height=\'20\' viewBox=\'0 0 20 20\'%3E%3Ccircle cx=\'10\' cy=\'10\' r=\'8\' fill=\'none\' stroke=\'%23fff\' stroke-width=\'2\'/%3E%3Ccircle cx=\'10\' cy=\'10\' r=\'8\' fill=\'none\' stroke=\'%23888\' stroke-width=\'1\'/%3E%3C/svg%3E") 10 10, crosshair'
+};
+
 function setDrawTool(tool) {
   drawTool = tool;
   ['pan','pen','line','arrow','highlight','rect','text','eraser'].forEach(t => {
     const btn = document.getElementById('draw-tool-' + t);
     if (btn) btn.classList.toggle('active', t === tool);
   });
-  // Update cursor style on SBS scroll panes & overlay area
-  const cursor = tool === 'pan' ? 'grab' : 'crosshair';
+  // Update cursor per tool
+  const cursor = _toolCursors[tool] || 'crosshair';
   DOM.sbsScrollOld.style.cursor = cursor;
   DOM.sbsScrollNew.style.cursor = cursor;
   DOM.canvasArea.style.cursor = cursor;
@@ -1966,6 +1976,23 @@ function setDrawTool(tool) {
   DOM.sbsDrawNew.style.pointerEvents = pe;
   // Overlay draw layer
   DOM.overlayDrawLayer.classList.toggle('drawing', tool !== 'pan');
+}
+
+// Throttled slider updates
+let _drawWidthTimer = null;
+function updateDrawWidth() {
+  const v = DOM.drawWidth.value;
+  DOM.drawWidthVal.textContent = v;
+  if (_drawWidthTimer) clearTimeout(_drawWidthTimer);
+  _drawWidthTimer = setTimeout(() => { _drawWidthTimer = null; }, 50);
+}
+
+let _textSizeTimer = null;
+function updateTextSize() {
+  const v = DOM.drawTextSize.value;
+  DOM.drawTextSizeVal.textContent = v;
+  if (_textSizeTimer) clearTimeout(_textSizeTimer);
+  _textSizeTimer = setTimeout(() => { _textSizeTimer = null; }, 50);
 }
 
 function getDrawKey() { return String(currentPage); }
@@ -2067,7 +2094,7 @@ function drawStrokeToCtx(ctx, s) {
     ctx.strokeRect(Math.min(s.x1, s.x2), Math.min(s.y1, s.y2),
                    Math.abs(s.x2 - s.x1), Math.abs(s.y2 - s.y1));
   } else if (s.tool === 'text') {
-    const fontSize = Math.max(14, s.width * 6);
+    const fontSize = s.textSize || Math.max(14, s.width * 6);
     ctx.font = `${fontSize}px 'DM Sans', sans-serif`;
     ctx.fillText(s.text, s.x1, s.y1);
   }
@@ -2092,7 +2119,7 @@ function strokeHitsPoint(s, px, py, radius) {
     if (distToSegment2(px, py, x2, y2, x1, y2) < r2) return true;
     if (distToSegment2(px, py, x1, y2, x1, y1) < r2) return true;
   } else if (s.tool === 'text') {
-    const fontSize = Math.max(14, s.width * 6);
+    const fontSize = s.textSize || Math.max(14, s.width * 6);
     if (px >= s.x1 && px <= s.x1 + fontSize * s.text.length * 0.6 &&
         py >= s.y1 - fontSize && py <= s.y1) return true;
   }
@@ -2144,11 +2171,12 @@ function initDrawing() {
       const pos = clientToCanvas(e, scrollPane, drawCanvas);
       const color = DOM.drawColor.value;
       const width = parseInt(DOM.drawWidth.value);
+      const textSize = parseInt(DOM.drawTextSize.value);
 
       if (drawTool === 'text') {
         const text = prompt('Enter text:');
         if (text) {
-          drawStrokesFor().push({ tool: 'text', x1: pos.x, y1: pos.y, color, width, text });
+          drawStrokesFor().push({ tool: 'text', x1: pos.x, y1: pos.y, color, width, text, textSize });
           renderAllDrawLayers();
         }
         drawSide = null;
