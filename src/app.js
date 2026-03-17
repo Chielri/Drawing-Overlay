@@ -744,6 +744,7 @@ function composite(w, h, imgO, imgN) {
       if (oldFirst) { drawOldLayer(); ctx.globalCompositeOperation = secondBlend; drawNewLayer(); }
       else { drawNewLayer(); ctx.globalCompositeOperation = secondBlend; drawOldLayer(); }
       ctx.globalCompositeOperation = 'source-over'; ctx.globalAlpha = 1;
+      renderDrawLayer('overlay');
     } else {
     // Standard offset-based alignment (with optional rotation)
     const rotDeg = getPageRotation(currentPage);
@@ -777,6 +778,7 @@ function composite(w, h, imgO, imgN) {
     if (oldFirst) { drawOldLayer(); ctx.globalCompositeOperation = secondBlend; drawNewLayer(); }
     else { drawNewLayer(); ctx.globalCompositeOperation = secondBlend; drawOldLayer(); }
     ctx.globalCompositeOperation = 'source-over'; ctx.globalAlpha = 1;
+    renderDrawLayer('overlay');
     }
   } else {
     // Side-by-side: render to two separate canvases
@@ -930,8 +932,12 @@ function setMode(m) {
         if (!drawStrokes[keyOld]) drawStrokes[keyOld] = [];
         if (!drawStrokes[keyNew]) drawStrokes[keyNew] = [];
         drawStrokes[keyOverlay].forEach(s => {
-          drawStrokes[keyOld].push({...s});
-          drawStrokes[keyNew].push({...s});
+          const clonedOld = {...s};
+          if (clonedOld.pts) clonedOld.pts = clonedOld.pts.map(p => ({...p}));
+          const clonedNew = {...s};
+          if (clonedNew.pts) clonedNew.pts = clonedNew.pts.map(p => ({...p}));
+          drawStrokes[keyOld].push(clonedOld);
+          drawStrokes[keyNew].push(clonedNew);
         });
         drawStrokes[keyOverlay] = [];
       }
@@ -940,8 +946,8 @@ function setMode(m) {
       const keyOld = getDrawKey('old'), keyNew = getDrawKey('new');
       const keyOverlay = getDrawKey('overlay');
       if (!drawStrokes[keyOverlay]) drawStrokes[keyOverlay] = [];
-      if (drawStrokes[keyOld]) { drawStrokes[keyOld].forEach(s => drawStrokes[keyOverlay].push({...s})); drawStrokes[keyOld] = []; }
-      if (drawStrokes[keyNew]) { drawStrokes[keyNew].forEach(s => drawStrokes[keyOverlay].push({...s})); drawStrokes[keyNew] = []; }
+      if (drawStrokes[keyOld]) { drawStrokes[keyOld].forEach(s => { const cloned = {...s}; if (cloned.pts) cloned.pts = cloned.pts.map(p => ({...p})); drawStrokes[keyOverlay].push(cloned); }); drawStrokes[keyOld] = []; }
+      if (drawStrokes[keyNew]) { drawStrokes[keyNew].forEach(s => { const cloned = {...s}; if (cloned.pts) cloned.pts = cloned.pts.map(p => ({...p})); drawStrokes[keyOverlay].push(cloned); }); drawStrokes[keyNew] = []; }
     }
   }
   if (hasRenderedOnce) {
@@ -1467,56 +1473,6 @@ async function exportAllPNG() {
   sO.addEventListener('wheel', sbsWheelZoom, {passive:false});
   sN.addEventListener('wheel', sbsWheelZoom, {passive:false});
 
-  // ── Crosshair overlay canvases ──
-  function resizeXhair(canvas, pane) {
-    const w = pane.clientWidth, h = pane.clientHeight;
-    if (canvas.width !== w || canvas.height !== h) {
-      canvas.width = w; canvas.height = h;
-    }
-  }
-  function drawXhair(canvas, x, y) {
-    resizeXhair(canvas, canvas.parentElement);
-    const ctx = canvas.getContext('2d');
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    if (x < 0) return; // hidden
-    const color = DOM.xhairColor.value;
-    const sz = parseInt(DOM.xhairSize.value); // 1=S, 2=M, 3=L
-    const lw = sz;
-    const dotR = 2 + sz * 2;
-    const dash = [3 + sz, 3 + sz];
-    // Dark outline pass for contrast
-    ctx.strokeStyle = 'rgba(0,0,0,0.5)';
-    ctx.lineWidth = lw + 2;
-    ctx.setLineDash(dash);
-    ctx.beginPath();
-    ctx.moveTo(x, 0); ctx.lineTo(x, canvas.height);
-    ctx.moveTo(0, y); ctx.lineTo(canvas.width, y);
-    ctx.stroke();
-    // Colored pass
-    ctx.strokeStyle = color;
-    ctx.lineWidth = lw;
-    ctx.beginPath();
-    ctx.moveTo(x, 0); ctx.lineTo(x, canvas.height);
-    ctx.moveTo(0, y); ctx.lineTo(canvas.width, y);
-    ctx.stroke();
-    ctx.setLineDash([]);
-    // Dot at intersection: outline + fill
-    ctx.fillStyle = 'rgba(0,0,0,0.5)';
-    ctx.beginPath(); ctx.arc(x, y, dotR + 1, 0, Math.PI * 2); ctx.fill();
-    ctx.fillStyle = color;
-    ctx.beginPath(); ctx.arc(x, y, dotR, 0, Math.PI * 2); ctx.fill();
-  }
-  function clearXhair(canvas) {
-    const ctx = canvas.getContext('2d');
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-  }
-
-  // Track mouse position in viewport-relative coords for the pane
-  function paneMousePos(pane, e) {
-    const rect = pane.getBoundingClientRect();
-    return { x: e.clientX - rect.left, y: e.clientY - rect.top };
-  }
-
   sO.addEventListener('mousemove', e => {
     if (!xhairEnabled) return;
     const pos = paneMousePos(sO, e);
@@ -1544,6 +1500,51 @@ async function exportAllPNG() {
   });
   DOM.canvasArea.addEventListener('mouseleave', () => { clearXhair(DOM.overlayXhair); });
 })();
+
+// ── Crosshair drawing utilities (global scope) ──
+function resizeXhair(canvas, pane) {
+  const w = pane.clientWidth, h = pane.clientHeight;
+  if (canvas.width !== w || canvas.height !== h) {
+    canvas.width = w; canvas.height = h;
+  }
+}
+function drawXhair(canvas, x, y) {
+  resizeXhair(canvas, canvas.parentElement);
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  if (x < 0) return;
+  const color = DOM.xhairColor.value;
+  const sz = parseInt(DOM.xhairSize.value);
+  const lw = sz;
+  const dotR = 2 + sz * 2;
+  const dash = [3 + sz, 3 + sz];
+  ctx.strokeStyle = 'rgba(0,0,0,0.5)';
+  ctx.lineWidth = lw + 2;
+  ctx.setLineDash(dash);
+  ctx.beginPath();
+  ctx.moveTo(x, 0); ctx.lineTo(x, canvas.height);
+  ctx.moveTo(0, y); ctx.lineTo(canvas.width, y);
+  ctx.stroke();
+  ctx.strokeStyle = color;
+  ctx.lineWidth = lw;
+  ctx.beginPath();
+  ctx.moveTo(x, 0); ctx.lineTo(x, canvas.height);
+  ctx.moveTo(0, y); ctx.lineTo(canvas.width, y);
+  ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.fillStyle = 'rgba(0,0,0,0.5)';
+  ctx.beginPath(); ctx.arc(x, y, dotR + 1, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = color;
+  ctx.beginPath(); ctx.arc(x, y, dotR, 0, Math.PI * 2); ctx.fill();
+}
+function clearXhair(canvas) {
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+}
+function paneMousePos(pane, e) {
+  const rect = pane.getBoundingClientRect();
+  return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+}
 
 // ═══════════════════════════════════════
 //  THUMBNAILS
@@ -2266,7 +2267,7 @@ function initDrawLayer(drawCanvas, scrollPane, side) {
     if (valid) {
       const saved = { ...s };
       delete saved.side; delete saved.targets;
-      s.targets.forEach(t => drawStrokesFor(t).push({...saved}));
+      s.targets.forEach(t => { const cloned = {...saved}; if (cloned.pts) cloned.pts = cloned.pts.map(p => ({...p})); drawStrokesFor(t).push(cloned); });
     }
     _drawCurrent = null;
     s.targets.forEach(t => renderDrawLayer(t));
