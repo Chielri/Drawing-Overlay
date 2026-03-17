@@ -194,6 +194,14 @@
         <button class="save-btn" onclick="exportPDF()">📄 PDF</button>
         <button class="save-btn" id="btn-export-all" onclick="exportAllPDF()">📦 All → PDF</button>
       </div>
+      <div class="control-row" style="margin-top:4px;">
+        <span class="control-label" style="font-size:11px;">JPEG Quality</span>
+        <span class="control-value" id="jpeg-quality-val">85%</span>
+      </div>
+      <div style="display:flex;align-items:center;gap:6px;">
+        <input type="range" id="jpeg-quality" min="50" max="98" value="85" oninput="updateJpegQuality()" style="flex:1;" />
+      </div>
+      <div class="offset-hint">Auto-picks PNG or JPEG per page (whichever is smaller). PNG wins on line drawings; slider sets JPEG quality when JPEG wins.</div>
       <div class="save-row" style="margin-top:8px;">
         <button class="save-btn" onclick="setAsDefault()">⚙ Set as Default</button>
         <button class="save-btn" onclick="resetToDefaults()" style="color:var(--red);">↺ Reset Defaults</button>
@@ -214,8 +222,7 @@
           <div class="cache-text" id="cache-status">No pages cached</div>
           <div class="mem-est" id="mem-est"></div>
           <div style="margin-top:6px;">
-            <div class="control-row"><span class="control-label" style="font-size:11px;">Memory Limit</span><span class="control-value" id="mem-limit-val">4096 MB</span></div>
-            <div style="display:flex;align-items:center;gap:4px;"><input type="number" id="mem-limit" min="256" max="131072" step="256" value="4096" onchange="changeMemLimit()" oninput="changeMemLimit()" style="width:80px;padding:2px 4px;border:1px solid var(--border);border-radius:3px;background:var(--surface2);color:var(--text);font-family:'JetBrains Mono',monospace;font-size:11px;text-align:right;outline:none;" /><span style="font-size:10px;color:var(--text-dim);">MB (max 128 GB)</span></div>
+            <div style="display:flex;align-items:center;gap:4px;"><span class="control-label" style="font-size:11px;">Memory Limit</span><input type="number" id="mem-limit" min="256" max="131072" step="256" value="4096" onchange="changeMemLimit()" oninput="changeMemLimit()" style="width:80px;padding:2px 4px;border:1px solid var(--border);border-radius:3px;background:var(--surface2);color:var(--text);font-family:'JetBrains Mono',monospace;font-size:11px;text-align:right;outline:none;" /><span class="control-value" id="mem-limit-val" style="font-size:10px;">4096 MB</span></div>
           </div>
           <div class="cache-controls">
             <div class="cache-range-row"><span class="offset-range-label">From</span><input type="number" class="cache-range-input" id="cache-from" value="1" min="1" /><span class="offset-range-label">to</span><input type="number" class="cache-range-input" id="cache-to" value="1" min="1" /></div>
