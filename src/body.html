@@ -30,6 +30,18 @@
         <button class="toggle-btn active" id="mode-overlay" onclick="setMode('overlay')">Overlay</button>
         <button class="toggle-btn" id="mode-sidebyside" onclick="setMode('sidebyside')">Side by Side</button>
       </div>
+      <div class="section-title" style="margin-top:8px;">Blend Mode</div>
+      <div class="toggle-row">
+        <button class="toggle-btn active" id="blend-multiply" onclick="setBlendMode('multiply')">Multiply</button>
+        <button class="toggle-btn" id="blend-alpha" onclick="setBlendMode('alpha')">Alpha</button>
+      </div>
+      <div class="alpha-main-row" id="alpha-main-row" style="display:none;margin-top:4px;">
+        <span class="offset-scope">On top: </span>
+        <div class="toggle-row" style="flex:1;">
+          <button class="toggle-btn" id="alpha-main-old" onclick="setAlphaMain('old')">Old</button>
+          <button class="toggle-btn active" id="alpha-main-new" onclick="setAlphaMain('new')">New</button>
+        </div>
+      </div>
     </div>
     <div>
       <div class="section-title">Visibility</div>
@@ -233,6 +245,8 @@
       </div>
       <div class="canvas-container" id="canvas-container" style="display:none;">
         <canvas id="canvas-output"></canvas>
+        <canvas id="overlay-draw-layer" class="overlay-draw-layer"></canvas>
+        <canvas id="overlay-xhair" class="overlay-xhair-canvas"></canvas>
         <canvas id="align3-overlay" class="align3-overlay"></canvas>
       </div>
     </div>
@@ -282,11 +296,19 @@
     </select>
     <span class="draw-sep"></span>
     <span class="draw-group-label">Cursor</span>
+    <button class="draw-tool-btn active" id="xhair-toggle" onclick="toggleXhair()" title="Toggle crosshair">+</button>
     <input type="color" class="draw-color-pick" id="xhair-color" value="#00ff00" title="Crosshair color" />
     <select class="draw-width-pick" id="xhair-size" title="Crosshair size">
       <option value="1">S</option>
       <option value="2" selected>M</option>
       <option value="3">L</option>
+    </select>
+    <span class="draw-sep"></span>
+    <span class="draw-group-label">Draw on</span>
+    <select class="draw-width-pick" id="draw-target" onchange="setDrawTarget(this.value)" title="Which pane to draw on">
+      <option value="both">Both</option>
+      <option value="old">Old</option>
+      <option value="new">New</option>
     </select>
     <span class="draw-sep"></span>
     <button class="draw-tool-btn" id="draw-tool-undo" onclick="drawUndo()" title="Undo (Ctrl+Z)">↩</button>

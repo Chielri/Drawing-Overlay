@@ -47,6 +47,13 @@ const DOM = {
   drawToolbar: $('draw-toolbar'),
   drawColor: $('draw-color'), drawWidth: $('draw-width'),
   xhairColor: $('xhair-color'), xhairSize: $('xhair-size'),
+  xhairToggle: $('xhair-toggle'), drawTarget: $('draw-target'),
+  // Overlay drawing + crosshair
+  overlayDrawLayer: $('overlay-draw-layer'), overlayXhair: $('overlay-xhair'),
+  // Blend mode
+  blendMultiply: $('blend-multiply'), blendAlpha: $('blend-alpha'),
+  alphaMainRow: $('alpha-main-row'),
+  alphaMainOld: $('alpha-main-old'), alphaMainNew: $('alpha-main-new'),
   // Bottom bar (page nav + draw tools)
   bottomBar: $('bottom-bar'), pageNavBar: $('page-nav-bar'),
   // Cache summary
@@ -107,8 +114,16 @@ let _sbsSyncLock = false; // prevents scroll-sync infinite loop
 
 // Drawing state
 let drawTool = 'pan'; // 'pan' | 'pen' | 'line' | 'arrow' | 'rect' | 'text'
-let drawStrokes = { old: [], new: [] }; // per-page arrays of stroke objects
+let drawStrokes = {}; // per-page-per-side arrays of stroke objects
 let _drawCurrent = null; // in-progress stroke
+let drawTarget = 'both'; // 'old' | 'new' | 'both'
+
+// Blend mode state
+let blendMode = 'multiply'; // 'multiply' | 'alpha'
+let alphaMain = 'new'; // which layer is on top in alpha mode: 'old' | 'new'
+
+// Crosshair state
+let xhairEnabled = true;
 
 const _tmpCanvasA = document.createElement('canvas');
 const _tmpCanvasB = document.createElement('canvas');
@@ -302,10 +317,16 @@ function resetToDefaults() {
 function hexToRgb(hex) { return [parseInt(hex.slice(1,3),16), parseInt(hex.slice(3,5),16), parseInt(hex.slice(5,7),16)]; }
 function hexToDim(hex) { const [r,g,b] = hexToRgb(hex); return `rgba(${r},${g},${b},0.15)`; }
 function blendOverlap([r1,g1,b1], a1, [r2,g2,b2], a2) {
-  // Multiply blend: each layer over white, then multiply the two results
   const sO = [255*(1-a1)+r1*a1, 255*(1-a1)+g1*a1, 255*(1-a1)+b1*a1];
   const sN = [255*(1-a2)+r2*a2, 255*(1-a2)+g2*a2, 255*(1-a2)+b2*a2];
-  return [Math.round(sO[0]*sN[0]/255), Math.round(sO[1]*sN[1]/255), Math.round(sO[2]*sN[2]/255)];
+  if (blendMode === 'multiply') {
+    return [Math.round(sO[0]*sN[0]/255), Math.round(sO[1]*sN[1]/255), Math.round(sO[2]*sN[2]/255)];
+  }
+  // Alpha: top layer over bottom
+  if (alphaMain === 'new') {
+    return [Math.round(sO[0]*(1-a2)+r2*a2), Math.round(sO[1]*(1-a2)+g2*a2), Math.round(sO[2]*(1-a2)+b2*a2)];
+  }
+  return [Math.round(sN[0]*(1-a1)+r1*a1), Math.round(sN[1]*(1-a1)+g1*a1), Math.round(sN[2]*(1-a1)+b1*a1)];
 }
 
 function syncColors() {
@@ -687,9 +708,13 @@ function composite(w, h, imgO, imgN) {
   const xform = getPageTransform(currentPage);
 
   if (mode === 'overlay') {
+    // Determine draw order for alpha mode
+    const secondBlend = blendMode === 'multiply' ? 'multiply' : 'source-over';
+    // In alpha mode, alphaMain determines which layer is on top (drawn second)
+    const oldFirst = blendMode === 'multiply' || alphaMain === 'new';
+
     if (xform) {
       // Affine transform mode: old stays fixed, new is transformed
-      // Compute bounding box of transformed new image to size canvas
       const corners = [[0,0],[imgN.width,0],[0,imgN.height],[imgN.width,imgN.height]];
       let minX=0, minY=0, maxX=wO, maxY=hO;
       corners.forEach(([px,py]) => {
@@ -703,22 +728,22 @@ function composite(w, h, imgO, imgN) {
       out.width = canvasW; out.height = canvasH;
       const ctx = out.getContext('2d');
       ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, canvasW, canvasH);
-      // Draw old PDF normally (scaled)
-      if (imgO && visOld) {
-        ctx.globalAlpha = aO;
-        ctx.drawImage(putImgToTempCanvas(imgO, _tmpCanvasA, _tmpCtxA), 0, 0, imgO.width, imgO.height, 0, 0, wO, hO);
-      }
-      // Draw new PDF with affine transform (multiply blend)
-      if (imgN && visNew) {
-        ctx.globalAlpha = aN;
-        ctx.globalCompositeOperation = 'multiply';
-        ctx.save();
-        ctx.setTransform(xform.a * sN, xform.c * sN, xform.b * sN, xform.d * sN, xform.e, xform.f);
-        ctx.drawImage(putImgToTempCanvas(imgN, _tmpCanvasB, _tmpCtxB), 0, 0);
-        ctx.restore();
-      }
-      ctx.globalCompositeOperation = 'source-over';
-      ctx.globalAlpha = 1;
+
+      const drawOldLayer = () => {
+        if (imgO && visOld) { ctx.globalAlpha = aO; ctx.drawImage(putImgToTempCanvas(imgO, _tmpCanvasA, _tmpCtxA), 0, 0, imgO.width, imgO.height, 0, 0, wO, hO); }
+      };
+      const drawNewLayer = () => {
+        if (imgN && visNew) {
+          ctx.globalAlpha = aN; ctx.save();
+          ctx.setTransform(xform.a * sN, xform.c * sN, xform.b * sN, xform.d * sN, xform.e, xform.f);
+          ctx.drawImage(putImgToTempCanvas(imgN, _tmpCanvasB, _tmpCtxB), 0, 0);
+          ctx.restore();
+        }
+      };
+
+      if (oldFirst) { drawOldLayer(); ctx.globalCompositeOperation = secondBlend; drawNewLayer(); }
+      else { drawNewLayer(); ctx.globalCompositeOperation = secondBlend; drawOldLayer(); }
+      ctx.globalCompositeOperation = 'source-over'; ctx.globalAlpha = 1;
     } else {
     // Standard offset-based alignment (with optional rotation)
     const rotDeg = getPageRotation(currentPage);
@@ -731,23 +756,27 @@ function composite(w, h, imgO, imgN) {
     out.width = canvasW; out.height = canvasH;
     const ctx = out.getContext('2d');
     ctx.fillStyle = '#fff'; ctx.fillRect(0,0,canvasW,canvasH);
-    if (imgO && visOld) { ctx.globalAlpha=aO; ctx.drawImage(putImgToTempCanvas(imgO,_tmpCanvasA,_tmpCtxA),0,0,imgO.width,imgO.height,oldDx,oldDy,wO,hO); }
-    if (imgN && visNew) {
-      ctx.globalAlpha=aN;
-      ctx.globalCompositeOperation = 'multiply';
-      if (Math.abs(rotDeg) > 0.001) {
-        const cx = newDx + wN / 2, cy = newDy + hN / 2;
-        ctx.save();
-        ctx.translate(cx, cy);
-        ctx.rotate(rotRad);
-        ctx.drawImage(putImgToTempCanvas(imgN,_tmpCanvasB,_tmpCtxB),0,0,imgN.width,imgN.height,-wN/2,-hN/2,wN,hN);
-        ctx.restore();
-      } else {
-        ctx.drawImage(putImgToTempCanvas(imgN,_tmpCanvasB,_tmpCtxB),0,0,imgN.width,imgN.height,newDx,newDy,wN,hN);
+
+    const drawOldLayer = () => {
+      if (imgO && visOld) { ctx.globalAlpha=aO; ctx.drawImage(putImgToTempCanvas(imgO,_tmpCanvasA,_tmpCtxA),0,0,imgO.width,imgO.height,oldDx,oldDy,wO,hO); }
+    };
+    const drawNewLayer = () => {
+      if (imgN && visNew) {
+        ctx.globalAlpha=aN;
+        if (Math.abs(rotDeg) > 0.001) {
+          const cx = newDx + wN / 2, cy = newDy + hN / 2;
+          ctx.save(); ctx.translate(cx, cy); ctx.rotate(rotRad);
+          ctx.drawImage(putImgToTempCanvas(imgN,_tmpCanvasB,_tmpCtxB),0,0,imgN.width,imgN.height,-wN/2,-hN/2,wN,hN);
+          ctx.restore();
+        } else {
+          ctx.drawImage(putImgToTempCanvas(imgN,_tmpCanvasB,_tmpCtxB),0,0,imgN.width,imgN.height,newDx,newDy,wN,hN);
+        }
       }
-    }
-    ctx.globalCompositeOperation = 'source-over';
-    ctx.globalAlpha = 1;
+    };
+
+    if (oldFirst) { drawOldLayer(); ctx.globalCompositeOperation = secondBlend; drawNewLayer(); }
+    else { drawNewLayer(); ctx.globalCompositeOperation = secondBlend; drawOldLayer(); }
+    ctx.globalCompositeOperation = 'source-over'; ctx.globalAlpha = 1;
     }
   } else {
     // Side-by-side: render to two separate canvases
@@ -779,6 +808,7 @@ function composite(w, h, imgO, imgN) {
     // Re-render draw layers on top
     if (typeof renderDrawLayer === 'function') {
       renderDrawLayer('old'); renderDrawLayer('new');
+      renderDrawLayer('overlay');
     }
     // Also render to the main output canvas for export
     out.width = Math.max(wO, wN); out.height = Math.max(hO, hN);
@@ -886,10 +916,34 @@ function matchScale() {
   scheduleThumbRefresh();
 }
 function setMode(m) {
+  const prevMode = mode;
   mode = m;
   DOM.modeOverlay.classList.toggle('active', m==='overlay');
   DOM.modeSidebyside.classList.toggle('active', m==='sidebyside');
-  // Toggle between single-canvas overlay and dual-pane side-by-side
+  // Sync drawings between modes
+  if (prevMode !== m && hasRenderedOnce) {
+    if (m === 'sidebyside') {
+      // overlay → side-by-side: duplicate overlay strokes to both panes
+      const keyOverlay = getDrawKey('overlay');
+      if (drawStrokes[keyOverlay] && drawStrokes[keyOverlay].length > 0) {
+        const keyOld = getDrawKey('old'), keyNew = getDrawKey('new');
+        if (!drawStrokes[keyOld]) drawStrokes[keyOld] = [];
+        if (!drawStrokes[keyNew]) drawStrokes[keyNew] = [];
+        drawStrokes[keyOverlay].forEach(s => {
+          drawStrokes[keyOld].push({...s});
+          drawStrokes[keyNew].push({...s});
+        });
+        drawStrokes[keyOverlay] = [];
+      }
+    } else {
+      // side-by-side → overlay: combine old+new strokes into overlay
+      const keyOld = getDrawKey('old'), keyNew = getDrawKey('new');
+      const keyOverlay = getDrawKey('overlay');
+      if (!drawStrokes[keyOverlay]) drawStrokes[keyOverlay] = [];
+      if (drawStrokes[keyOld]) { drawStrokes[keyOld].forEach(s => drawStrokes[keyOverlay].push({...s})); drawStrokes[keyOld] = []; }
+      if (drawStrokes[keyNew]) { drawStrokes[keyNew].forEach(s => drawStrokes[keyOverlay].push({...s})); drawStrokes[keyNew] = []; }
+    }
+  }
   if (hasRenderedOnce) {
     if (m === 'sidebyside') {
       DOM.canvasPad.style.display = 'none';
@@ -900,6 +954,36 @@ function setMode(m) {
     }
   }
   if (rawOld || rawNew) recolorAndComposite();
+}
+
+function setBlendMode(bm) {
+  blendMode = bm;
+  DOM.blendMultiply.classList.toggle('active', bm === 'multiply');
+  DOM.blendAlpha.classList.toggle('active', bm === 'alpha');
+  DOM.alphaMainRow.style.display = bm === 'alpha' ? '' : 'none';
+  invalidateRecolor();
+  syncColors();
+  if (rawOld || rawNew) recolorAndComposite();
+}
+
+function setAlphaMain(which) {
+  alphaMain = which;
+  DOM.alphaMainOld.classList.toggle('active', which === 'old');
+  DOM.alphaMainNew.classList.toggle('active', which === 'new');
+  if (rawOld || rawNew) recolorAndComposite();
+}
+
+function toggleXhair() {
+  xhairEnabled = !xhairEnabled;
+  DOM.xhairToggle.classList.toggle('active', xhairEnabled);
+  if (!xhairEnabled) {
+    clearXhair(DOM.sbsXhairOld); clearXhair(DOM.sbsXhairNew);
+    clearXhair(DOM.overlayXhair);
+  }
+}
+
+function setDrawTarget(target) {
+  drawTarget = target;
 }
 function toggleVis(which) {
   if (which==='old') visOld=!visOld; else visNew=!visNew;
@@ -1192,16 +1276,56 @@ function _ensureJsPDF() {
   return false;
 }
 
+// Collect all annotation strokes for the current page (from all sides)
+function collectAnnotationsForPage(page) {
+  const all = [];
+  ['overlay', 'old', 'new'].forEach(side => {
+    const key = page + '_' + side;
+    if (drawStrokes[key]) all.push(...drawStrokes[key]);
+  });
+  return all;
+}
+
+// Render annotations to a temp canvas matching the output canvas size
+function renderAnnotationsCanvas(annotations, w, h) {
+  if (!annotations.length) return null;
+  const c = document.createElement('canvas');
+  c.width = w; c.height = h;
+  const ctx = c.getContext('2d');
+  annotations.forEach(s => drawStrokeToCtx(ctx, s));
+  return c;
+}
+
+// Composite output + annotations into a single canvas for PNG export
+function compositeWithAnnotations() {
+  const out = DOM.canvasOutput;
+  const annotations = collectAnnotationsForPage(currentPage);
+  if (!annotations.length) return out;
+  const c = document.createElement('canvas');
+  c.width = out.width; c.height = out.height;
+  const ctx = c.getContext('2d');
+  ctx.drawImage(out, 0, 0);
+  const annCanvas = renderAnnotationsCanvas(annotations, out.width, out.height);
+  if (annCanvas) ctx.drawImage(annCanvas, 0, 0);
+  return c;
+}
+
 function exportPNG() {
   if(!DOM.canvasOutput.width) return alert('Nothing to export.');
-  DOM.canvasOutput.toBlob(b=>{const a=document.createElement('a');a.href=URL.createObjectURL(b);a.download=`overlay-page-${currentPage}.png`;a.click();URL.revokeObjectURL(a.href);},'image/png');
+  const c = compositeWithAnnotations();
+  c.toBlob(b=>{const a=document.createElement('a');a.href=URL.createObjectURL(b);a.download=`overlay-page-${currentPage}.png`;a.click();URL.revokeObjectURL(a.href);},'image/png');
 }
 async function exportPDF() {
-  const c=DOM.canvasOutput; if(!c.width) return alert('Nothing to export.');
+  const out=DOM.canvasOutput; if(!out.width) return alert('Nothing to export.');
   if (!await _ensureJsPDF()) return;
-  const JsPDF = _getJsPDF(), o=c.width>=c.height?'landscape':'portrait';
-  const pdf=new JsPDF({orientation:o,unit:'px',format:[c.width,c.height]});
-  pdf.addImage(c.toDataURL('image/jpeg',0.92),'JPEG',0,0,c.width,c.height);
+  const JsPDF = _getJsPDF(), o=out.width>=out.height?'landscape':'portrait';
+  const pdf=new JsPDF({orientation:o,unit:'px',format:[out.width,out.height]});
+  // Base overlay as JPEG
+  pdf.addImage(out.toDataURL('image/jpeg',0.92),'JPEG',0,0,out.width,out.height);
+  // Annotations as separate transparent PNG layer
+  const annotations = collectAnnotationsForPage(currentPage);
+  const annCanvas = renderAnnotationsCanvas(annotations, out.width, out.height);
+  if (annCanvas) pdf.addImage(annCanvas.toDataURL('image/png'),'PNG',0,0,out.width,out.height);
   pdf.save(`overlay-page-${currentPage}.pdf`);
 }
 async function exportAllPDF() {
@@ -1217,7 +1341,12 @@ async function exportAllPDF() {
       const c=DOM.canvasOutput, o=c.width>=c.height?'landscape':'portrait';
       if(p===1) pdf=new JsPDF({orientation:o,unit:'px',format:[c.width,c.height]});
       else pdf.addPage([c.width,c.height],o);
+      // Base overlay as JPEG
       pdf.addImage(c.toDataURL('image/jpeg',0.92),'JPEG',0,0,c.width,c.height);
+      // Annotations as separate transparent PNG layer
+      const annotations = collectAnnotationsForPage(p);
+      const annCanvas = renderAnnotationsCanvas(annotations, c.width, c.height);
+      if (annCanvas) pdf.addImage(annCanvas.toDataURL('image/png'),'PNG',0,0,c.width,c.height);
     }
     pdf.save(`overlay-all-pages-${new Date().toISOString().slice(0,10)}.pdf`);
   } finally {
@@ -1239,7 +1368,8 @@ async function exportAllPNG() {
       await sleep(30);
       currentPage = p; loadOffsetUI();
       await renderPage(p);
-      const blob = await new Promise(r => DOM.canvasOutput.toBlob(r, 'image/png'));
+      const c = compositeWithAnnotations();
+      const blob = await new Promise(r => c.toBlob(r, 'image/png'));
       zip.file(`overlay-page-${String(p).padStart(3, '0')}.png`, blob);
     }
     btn.textContent = 'Zipping…';
@@ -1388,17 +1518,31 @@ async function exportAllPNG() {
   }
 
   sO.addEventListener('mousemove', e => {
+    if (!xhairEnabled) return;
     const pos = paneMousePos(sO, e);
     drawXhair(DOM.sbsXhairOld, pos.x, pos.y);
     drawXhair(DOM.sbsXhairNew, pos.x, pos.y);
   });
   sN.addEventListener('mousemove', e => {
+    if (!xhairEnabled) return;
     const pos = paneMousePos(sN, e);
     drawXhair(DOM.sbsXhairOld, pos.x, pos.y);
     drawXhair(DOM.sbsXhairNew, pos.x, pos.y);
   });
   sO.addEventListener('mouseleave', () => { clearXhair(DOM.sbsXhairOld); clearXhair(DOM.sbsXhairNew); });
   sN.addEventListener('mouseleave', () => { clearXhair(DOM.sbsXhairOld); clearXhair(DOM.sbsXhairNew); });
+
+  // Overlay mode crosshair
+  DOM.canvasArea.addEventListener('mousemove', e => {
+    if (!xhairEnabled || mode !== 'overlay') return;
+    const container = DOM.canvasContainer;
+    if (container.style.display === 'none') return;
+    const rect = container.getBoundingClientRect();
+    const x = e.clientX - rect.left, y = e.clientY - rect.top;
+    if (x < 0 || y < 0 || x > rect.width || y > rect.height) { clearXhair(DOM.overlayXhair); return; }
+    drawXhair(DOM.overlayXhair, x, y);
+  });
+  DOM.canvasArea.addEventListener('mouseleave', () => { clearXhair(DOM.overlayXhair); });
 })();
 
 // ═══════════════════════════════════════
@@ -1868,6 +2012,7 @@ window.addEventListener('keydown',e=>{
 //  DRAWING TOOLS
 // ═══════════════════════════════════════
 function syncDrawLayerSize(side) {
+  if (side === 'overlay') return; // overlay draw layer sized in renderDrawLayer
   const draw = side === 'old' ? DOM.sbsDrawOld : DOM.sbsDrawNew;
   const src = side === 'old' ? DOM.sbsCanvasOld : DOM.sbsCanvasNew;
   if (draw.width !== src.width || draw.height !== src.height) {
@@ -1891,6 +2036,8 @@ function setDrawTool(tool) {
   const pe = tool === 'pan' ? 'none' : 'auto';
   DOM.sbsDrawOld.style.pointerEvents = pe;
   DOM.sbsDrawNew.style.pointerEvents = pe;
+  // Overlay draw layer
+  DOM.overlayDrawLayer.classList.toggle('drawing', tool !== 'pan');
 }
 
 function getDrawKey(side) { return currentPage + '_' + side; }
@@ -1913,16 +2060,24 @@ function clientToCanvas(e, scrollPane, canvas) {
 }
 
 function renderDrawLayer(side) {
-  const canvas = side === 'old' ? DOM.sbsDrawOld : DOM.sbsDrawNew;
-  const srcCanvas = side === 'old' ? DOM.sbsCanvasOld : DOM.sbsCanvasNew;
+  let canvas, srcCanvas;
+  if (side === 'overlay') {
+    canvas = DOM.overlayDrawLayer;
+    srcCanvas = DOM.canvasOutput;
+  } else {
+    canvas = side === 'old' ? DOM.sbsDrawOld : DOM.sbsDrawNew;
+    srcCanvas = side === 'old' ? DOM.sbsCanvasOld : DOM.sbsCanvasNew;
+  }
   // Match draw layer size to source canvas
   if (canvas.width !== srcCanvas.width || canvas.height !== srcCanvas.height) {
     canvas.width = srcCanvas.width;
     canvas.height = srcCanvas.height;
   }
-  // Match CSS display size
-  canvas.style.width = srcCanvas.style.width;
-  canvas.style.height = srcCanvas.style.height;
+  // Match CSS display size (overlay uses 100% from CSS)
+  if (side !== 'overlay') {
+    canvas.style.width = srcCanvas.style.width;
+    canvas.style.height = srcCanvas.style.height;
+  }
   const ctx = canvas.getContext('2d');
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   const strokes = drawStrokesFor(side);
@@ -2030,8 +2185,22 @@ function distToSegment2(px, py, x1, y1, x2, y2) {
 function initDrawLayer(drawCanvas, scrollPane, side) {
   let drawing = false;
 
+  // For SBS: determine which sides to actually draw on based on drawTarget
+  function getTargetSides() {
+    if (side === 'overlay') return ['overlay'];
+    if (drawTarget === 'both') return ['old', 'new'];
+    return [drawTarget];
+  }
+  // For SBS: should this canvas accept input?
+  function shouldAcceptInput() {
+    if (side === 'overlay') return mode === 'overlay';
+    if (mode !== 'sidebyside') return false;
+    return drawTarget === 'both' || drawTarget === side;
+  }
+
   drawCanvas.addEventListener('mousedown', e => {
-    if (drawTool === 'pan' || e.button !== 0) return; // only left-click draws
+    if (drawTool === 'pan' || e.button !== 0) return;
+    if (!shouldAcceptInput()) return;
     e.preventDefault(); e.stopPropagation();
     const pos = clientToCanvas(e, scrollPane, drawCanvas);
     const color = DOM.drawColor.value;
@@ -2040,23 +2209,25 @@ function initDrawLayer(drawCanvas, scrollPane, side) {
     if (drawTool === 'text') {
       const text = prompt('Enter text:');
       if (text) {
-        drawStrokesFor(side).push({ tool: 'text', x1: pos.x, y1: pos.y, color, width, text });
-        renderDrawLayer(side);
+        getTargetSides().forEach(s => {
+          drawStrokesFor(s).push({ tool: 'text', x1: pos.x, y1: pos.y, color, width, text });
+          renderDrawLayer(s);
+        });
       }
       return;
     }
 
     if (drawTool === 'eraser') {
       drawing = true;
-      _drawCurrent = { tool: 'eraser', pts: [pos], width, side };
+      _drawCurrent = { tool: 'eraser', pts: [pos], width, side, targets: getTargetSides() };
       return;
     }
 
     drawing = true;
     if (drawTool === 'pen' || drawTool === 'highlight') {
-      _drawCurrent = { tool: drawTool, pts: [pos], color, width, side };
+      _drawCurrent = { tool: drawTool, pts: [pos], color, width, side, targets: getTargetSides() };
     } else {
-      _drawCurrent = { tool: drawTool, x1: pos.x, y1: pos.y, x2: null, y2: null, color, width, side };
+      _drawCurrent = { tool: drawTool, x1: pos.x, y1: pos.y, x2: null, y2: null, color, width, side, targets: getTargetSides() };
     }
   });
 
@@ -2065,15 +2236,14 @@ function initDrawLayer(drawCanvas, scrollPane, side) {
     const pos = clientToCanvas(e, scrollPane, drawCanvas);
     if (_drawCurrent.tool === 'eraser') {
       _drawCurrent.pts.push(pos);
-      // Erase strokes that intersect with the eraser path
       const eraserR = Math.max(_drawCurrent.width * 5, 10);
-      const strokes = drawStrokesFor(side);
-      for (let i = strokes.length - 1; i >= 0; i--) {
-        if (strokeHitsPoint(strokes[i], pos.x, pos.y, eraserR)) {
-          strokes.splice(i, 1);
+      _drawCurrent.targets.forEach(s => {
+        const strokes = drawStrokesFor(s);
+        for (let i = strokes.length - 1; i >= 0; i--) {
+          if (strokeHitsPoint(strokes[i], pos.x, pos.y, eraserR)) strokes.splice(i, 1);
         }
-      }
-      renderDrawLayer(side);
+        renderDrawLayer(s);
+      });
       return;
     }
     if (_drawCurrent.tool === 'pen' || _drawCurrent.tool === 'highlight') {
@@ -2082,55 +2252,60 @@ function initDrawLayer(drawCanvas, scrollPane, side) {
       _drawCurrent.x2 = pos.x;
       _drawCurrent.y2 = pos.y;
     }
-    renderDrawLayer(side);
+    _drawCurrent.targets.forEach(s => renderDrawLayer(s));
   });
 
   window.addEventListener('mouseup', () => {
     if (!drawing || !_drawCurrent || _drawCurrent.side !== side) return;
     drawing = false;
-    // Only save if there's meaningful content
     const s = _drawCurrent;
     let valid = false;
     if ((s.tool === 'pen' || s.tool === 'highlight') && s.pts && s.pts.length >= 2) valid = true;
     if ((s.tool === 'line' || s.tool === 'arrow' || s.tool === 'rect') && s.x2 != null) valid = true;
-    if (s.tool === 'eraser') valid = false; // eraser removes inline, nothing to save
+    if (s.tool === 'eraser') valid = false;
     if (valid) {
       const saved = { ...s };
-      delete saved.side;
-      drawStrokesFor(side).push(saved);
+      delete saved.side; delete saved.targets;
+      s.targets.forEach(t => drawStrokesFor(t).push({...saved}));
     }
     _drawCurrent = null;
-    renderDrawLayer(side);
+    s.targets.forEach(t => renderDrawLayer(t));
   });
 }
 
 initDrawLayer(DOM.sbsDrawOld, DOM.sbsScrollOld, 'old');
 initDrawLayer(DOM.sbsDrawNew, DOM.sbsScrollNew, 'new');
-// Prevent context menu on draw layers so right-click doesn't interfere
+initDrawLayer(DOM.overlayDrawLayer, DOM.canvasArea, 'overlay');
 DOM.sbsDrawOld.addEventListener('contextmenu', e => e.preventDefault());
 DOM.sbsDrawNew.addEventListener('contextmenu', e => e.preventDefault());
+DOM.overlayDrawLayer.addEventListener('contextmenu', e => e.preventDefault());
 
 function drawUndo() {
-  // Undo last stroke from whichever side was drawn last
-  for (const side of ['old', 'new']) {
-    const key = getDrawKey(side);
+  if (mode === 'overlay') {
+    const key = getDrawKey('overlay');
     if (drawStrokes[key] && drawStrokes[key].length > 0) {
-      // Find which side has the most recent stroke (just pop from both alternately)
+      drawStrokes[key].pop(); renderDrawLayer('overlay');
     }
-  }
-  // Simple: undo from old first, then new
-  const keyOld = getDrawKey('old'), keyNew = getDrawKey('new');
-  const sOld = drawStrokes[keyOld] || [], sNew = drawStrokes[keyNew] || [];
-  if (sNew.length >= sOld.length && sNew.length > 0) {
-    sNew.pop(); renderDrawLayer('new');
-  } else if (sOld.length > 0) {
-    sOld.pop(); renderDrawLayer('old');
+  } else {
+    // SBS: undo from the target sides
+    const sides = drawTarget === 'both' ? ['old', 'new'] : [drawTarget];
+    sides.forEach(s => {
+      const key = getDrawKey(s);
+      if (drawStrokes[key] && drawStrokes[key].length > 0) {
+        drawStrokes[key].pop(); renderDrawLayer(s);
+      }
+    });
   }
 }
 
 function drawClear() {
-  drawStrokes[getDrawKey('old')] = [];
-  drawStrokes[getDrawKey('new')] = [];
-  renderDrawLayer('old');
-  renderDrawLayer('new');
+  if (mode === 'overlay') {
+    drawStrokes[getDrawKey('overlay')] = [];
+    renderDrawLayer('overlay');
+  } else {
+    drawStrokes[getDrawKey('old')] = [];
+    drawStrokes[getDrawKey('new')] = [];
+    renderDrawLayer('old');
+    renderDrawLayer('new');
+  }
 }
