@@ -302,8 +302,10 @@ function resetToDefaults() {
 function hexToRgb(hex) { return [parseInt(hex.slice(1,3),16), parseInt(hex.slice(3,5),16), parseInt(hex.slice(5,7),16)]; }
 function hexToDim(hex) { const [r,g,b] = hexToRgb(hex); return `rgba(${r},${g},${b},0.15)`; }
 function blendOverlap([r1,g1,b1], a1, [r2,g2,b2], a2) {
-  let r=255*(1-a1)+r1*a1, g=255*(1-a1)+g1*a1, b=255*(1-a1)+b1*a1;
-  return [Math.round(r*(1-a2)+r2*a2), Math.round(g*(1-a2)+g2*a2), Math.round(b*(1-a2)+b2*a2)];
+  // Multiply blend: each layer over white, then multiply the two results
+  const sO = [255*(1-a1)+r1*a1, 255*(1-a1)+g1*a1, 255*(1-a1)+b1*a1];
+  const sN = [255*(1-a2)+r2*a2, 255*(1-a2)+g2*a2, 255*(1-a2)+b2*a2];
+  return [Math.round(sO[0]*sN[0]/255), Math.round(sO[1]*sN[1]/255), Math.round(sO[2]*sN[2]/255)];
 }
 
 function syncColors() {
@@ -706,20 +708,16 @@ function composite(w, h, imgO, imgN) {
         ctx.globalAlpha = aO;
         ctx.drawImage(putImgToTempCanvas(imgO, _tmpCanvasA, _tmpCtxA), 0, 0, imgO.width, imgO.height, 0, 0, wO, hO);
       }
-      // Draw new PDF with affine transform
+      // Draw new PDF with affine transform (multiply blend)
       if (imgN && visNew) {
         ctx.globalAlpha = aN;
+        ctx.globalCompositeOperation = 'multiply';
         ctx.save();
-        // The affine transform maps new-image coords → old-image coords
-        // Canvas setTransform(a, c, b, d, e, f) — note the parameter order!
-        // setTransform(horizontalScaling, verticalSkewing, horizontalSkewing, verticalScaling, horizontalTranslation, verticalTranslation)
-        // Our transform: dst.x = a*src.x + b*src.y + e, dst.y = c*src.x + d*src.y + f
-        // We need to account for the per-layer scale: the new image is drawn at sN scale
-        // The transform was computed on composite-space coords, so we need to compose with sN
         ctx.setTransform(xform.a * sN, xform.c * sN, xform.b * sN, xform.d * sN, xform.e, xform.f);
         ctx.drawImage(putImgToTempCanvas(imgN, _tmpCanvasB, _tmpCtxB), 0, 0);
         ctx.restore();
       }
+      ctx.globalCompositeOperation = 'source-over';
       ctx.globalAlpha = 1;
     } else {
     // Standard offset-based alignment (with optional rotation)
@@ -736,8 +734,8 @@ function composite(w, h, imgO, imgN) {
     if (imgO && visOld) { ctx.globalAlpha=aO; ctx.drawImage(putImgToTempCanvas(imgO,_tmpCanvasA,_tmpCtxA),0,0,imgO.width,imgO.height,oldDx,oldDy,wO,hO); }
     if (imgN && visNew) {
       ctx.globalAlpha=aN;
+      ctx.globalCompositeOperation = 'multiply';
       if (Math.abs(rotDeg) > 0.001) {
-        // Rotate new image around its center position on the canvas
         const cx = newDx + wN / 2, cy = newDy + hN / 2;
         ctx.save();
         ctx.translate(cx, cy);
@@ -748,6 +746,7 @@ function composite(w, h, imgO, imgN) {
         ctx.drawImage(putImgToTempCanvas(imgN,_tmpCanvasB,_tmpCtxB),0,0,imgN.width,imgN.height,newDx,newDy,wN,hN);
       }
     }
+    ctx.globalCompositeOperation = 'source-over';
     ctx.globalAlpha = 1;
     }
   } else {
@@ -1163,7 +1162,7 @@ async function loadPreset(e) {
     DOM.nameNew.textContent=p.fileNew||'new.pdf'; DOM.zoneNew.classList.add('has-file');
     maxPages=Math.max(pdfOld.numPages,pdfNew.numPages); currentPage=p.currentPage||1; if(currentPage>maxPages) currentPage=1;
     cachePPI=parseInt(DOM.ppiSelect.value); cacheOld={}; cacheNew={}; lruOrder=[]; lruSet=new Set(); _trackedCacheBytes=0;
-    DOM.placeholder.style.display='none'; DOM.canvasContainer.style.display='block'; DOM.zoomBar.classList.add('show'); DOM.drawToolbar.classList.add('show');
+    DOM.placeholder.style.display='none'; DOM.canvasContainer.style.display='block'; DOM.zoomBar.classList.add('show'); DOM.bottomBar.classList.add('show');
     if (mode === 'sidebyside') { DOM.canvasPad.style.display = 'none'; DOM.sbsWrapper.style.display = 'flex'; }
     else { DOM.canvasPad.style.display = ''; DOM.sbsWrapper.style.display = 'none'; }
     DOM.btnCompare.disabled=false; DOM.btnCompare.textContent='Rendering page '+currentPage+'…'; await sleep(30);
