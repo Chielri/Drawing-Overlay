@@ -29,7 +29,7 @@ const DOM = {
   btnPrev: $('btn-prev'), btnNext: $('btn-next'),
   cacheBar: $('cache-bar'), cacheStatus: $('cache-status'), memEst: $('mem-est'),
   cacheIndicator: $('cache-indicator'),
-  cacheFrom: $('cache-from'), cacheTo: $('cache-to'), memLimit: $('mem-limit'), memLimitVal: $('mem-limit-val'),
+  cacheFrom: $('cache-from'), cacheTo: $('cache-to'), memLimit: $('mem-limit'),
   offsetX: $('offset-x'), offsetY: $('offset-y'),
   offsetXSlider: $('offset-x-slider'), offsetYSlider: $('offset-y-slider'),
   offsetRange: $('offset-range'),
@@ -141,7 +141,6 @@ function debounce(fn, ms) { let t; return function(...a) { clearTimeout(t); t = 
 function changeMemLimit() {
   const v = Math.max(256, Math.min(131072, parseInt(DOM.memLimit.value) || 4096));
   cacheMemLimitMB = v;
-  DOM.memLimitVal.textContent = v >= 1024 ? (v/1024).toFixed(1).replace(/\.0$/,'') + ' GB' : v + ' MB';
   let safety = lruOrder.length + 2;
   while (_trackedCacheBytes > cacheMemLimitMB * 1048576 && lruOrder.length > 1 && safety-- > 0) {
     const oldest = lruOrder[0];
