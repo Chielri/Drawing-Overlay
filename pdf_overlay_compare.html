@@ -881,11 +881,11 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         <div class="sub-section-body">
           <div class="offset-wrap">
             <div class="offset-axis">
-              <div class="offset-axis-header"><span class="offset-label" id="label-scale-old">Old</span><input type="number" class="offset-input" id="input-scale-old" value="100" step="1" min="10" max="500" onchange="inputScale()" oninput="inputScale()" /><span class="offset-unit">%</span></div>
+              <div class="offset-axis-header"><span class="offset-label" id="label-scale-old">Old</span><input type="number" class="offset-input" id="input-scale-old" value="100" step="0.1" min="10" max="500" onchange="inputScale()" oninput="inputScale()" /><span class="offset-unit">%</span></div>
               <input type="range" id="slider-scale-old" min="25" max="200" value="100" step="1" oninput="sliderScale()" />
             </div>
             <div class="offset-axis">
-              <div class="offset-axis-header"><span class="offset-label" id="label-scale-new">New</span><input type="number" class="offset-input" id="input-scale-new" value="100" step="1" min="10" max="500" onchange="inputScale()" oninput="inputScale()" /><span class="offset-unit">%</span></div>
+              <div class="offset-axis-header"><span class="offset-label" id="label-scale-new">New</span><input type="number" class="offset-input" id="input-scale-new" value="100" step="0.1" min="10" max="500" onchange="inputScale()" oninput="inputScale()" /><span class="offset-unit">%</span></div>
               <input type="range" id="slider-scale-new" min="25" max="200" value="100" step="1" oninput="sliderScale()" />
             </div>
             <div class="offset-btn-row" style="margin-top:4px;">
@@ -904,11 +904,11 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         <div class="sub-section-body">
           <div class="offset-wrap">
             <div class="offset-axis">
-              <div class="offset-axis-header"><span class="offset-label">X</span><input type="number" class="offset-input" id="offset-x" value="0" step="1" onchange="applyOffset()" oninput="applyOffset()" /><span class="offset-unit">px</span></div>
+              <div class="offset-axis-header"><span class="offset-label">X</span><input type="number" class="offset-input" id="offset-x" value="0" step="0.1" onchange="applyOffset()" oninput="applyOffset()" /><span class="offset-unit">px</span></div>
               <input type="range" class="offset-slider" id="offset-x-slider" min="-500" max="500" value="0" oninput="sliderToInput('x')" />
             </div>
             <div class="offset-axis">
-              <div class="offset-axis-header"><span class="offset-label">Y</span><input type="number" class="offset-input" id="offset-y" value="0" step="1" onchange="applyOffset()" oninput="applyOffset()" /><span class="offset-unit">px</span></div>
+              <div class="offset-axis-header"><span class="offset-label">Y</span><input type="number" class="offset-input" id="offset-y" value="0" step="0.1" onchange="applyOffset()" oninput="applyOffset()" /><span class="offset-unit">px</span></div>
               <input type="range" class="offset-slider" id="offset-y-slider" min="-500" max="500" value="0" oninput="sliderToInput('y')" />
             </div>
             <div class="offset-range-row"><span class="offset-range-label">Range ±</span><input type="number" class="offset-range-input" id="offset-range" value="500" min="50" step="50" onchange="updateSliderRange()" /><span class="offset-range-label">px</span></div>
@@ -1381,8 +1381,8 @@ function gatherUISettings() {
     offsetRange: parseInt(DOM.offsetRange.value) || 500,
     transformScope: DOM.transformScope.value,
     thumbPPI, memLimitMB: cacheMemLimitMB,
-    scaleOld: parseInt(DOM.inputScaleOld.value) || 100,
-    scaleNew: parseInt(DOM.inputScaleNew.value) || 100
+    scaleOld: parseFloat(DOM.inputScaleOld.value) || 100,
+    scaleNew: parseFloat(DOM.inputScaleNew.value) || 100
   };
 }
 
@@ -2002,15 +2002,15 @@ function sliderScale() {
   _applyScale();
 }
 function inputScale() {
-  const sO = Math.max(10, Math.min(500, parseInt(DOM.inputScaleOld.value) || 100));
-  const sN = Math.max(10, Math.min(500, parseInt(DOM.inputScaleNew.value) || 100));
+  const sO = Math.max(10, Math.min(500, parseFloat(DOM.inputScaleOld.value) || 100));
+  const sN = Math.max(10, Math.min(500, parseFloat(DOM.inputScaleNew.value) || 100));
   DOM.sliderScaleOld.value = Math.max(25, Math.min(200, sO));
   DOM.sliderScaleNew.value = Math.max(25, Math.min(200, sN));
   _applyScale();
 }
 function _applyScale() {
-  const sO = parseInt(DOM.inputScaleOld.value) || 100;
-  const sN = parseInt(DOM.inputScaleNew.value) || 100;
+  const sO = parseFloat(DOM.inputScaleOld.value) || 100;
+  const sN = parseFloat(DOM.inputScaleNew.value) || 100;
   if (DOM.transformScope.value === 'all') {
     for (let p = 1; p <= maxPages; p++) { clearPageTransform(p); setPageScale(p, sO, sN); }
   } else {
@@ -2028,7 +2028,7 @@ function resetScale() {
   if (rawOld || rawNew) recolorAndComposite();
 }
 function matchScale() {
-  const sN = parseInt(DOM.inputScaleNew.value) || 100;
+  const sN = parseFloat(DOM.inputScaleNew.value) || 100;
   if (DOM.transformScope.value === 'all') {
     for (let p = 1; p <= maxPages; p++) { const s = getPageScale(p); setPageScale(p, sN, s.new); }
   } else {
@@ -2208,7 +2208,7 @@ function loadTransformUI() {
 // Legacy alias — many call sites use loadOffsetUI
 function loadOffsetUI() { loadTransformUI(); }
 function syncSliders() {
-  const x=parseInt(DOM.offsetX.value)||0, y=parseInt(DOM.offsetY.value)||0;
+  const x=parseFloat(DOM.offsetX.value)||0, y=parseFloat(DOM.offsetY.value)||0;
   DOM.offsetXSlider.value = Math.max(parseInt(DOM.offsetXSlider.min),Math.min(parseInt(DOM.offsetXSlider.max),x));
   DOM.offsetYSlider.value = Math.max(parseInt(DOM.offsetYSlider.min),Math.min(parseInt(DOM.offsetYSlider.max),y));
 }
@@ -2225,7 +2225,7 @@ function updateSliderRange() {
   syncSliders();
 }
 function applyOffset() {
-  const x=parseInt(DOM.offsetX.value)||0, y=parseInt(DOM.offsetY.value)||0;
+  const x=parseFloat(DOM.offsetX.value)||0, y=parseFloat(DOM.offsetY.value)||0;
   syncSliders();
   // Clear affine transform so manual offset takes effect via standard path
   if (DOM.transformScope.value==='all') { for(let p=1;p<=maxPages;p++) { clearPageTransform(p); setPageOffset(p,x,y); } }

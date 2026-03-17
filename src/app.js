@@ -267,8 +267,8 @@ function gatherUISettings() {
     offsetRange: parseInt(DOM.offsetRange.value) || 500,
     transformScope: DOM.transformScope.value,
     thumbPPI, memLimitMB: cacheMemLimitMB,
-    scaleOld: parseInt(DOM.inputScaleOld.value) || 100,
-    scaleNew: parseInt(DOM.inputScaleNew.value) || 100
+    scaleOld: parseFloat(DOM.inputScaleOld.value) || 100,
+    scaleNew: parseFloat(DOM.inputScaleNew.value) || 100
   };
 }
 
@@ -888,15 +888,15 @@ function sliderScale() {
   _applyScale();
 }
 function inputScale() {
-  const sO = Math.max(10, Math.min(500, parseInt(DOM.inputScaleOld.value) || 100));
-  const sN = Math.max(10, Math.min(500, parseInt(DOM.inputScaleNew.value) || 100));
+  const sO = Math.max(10, Math.min(500, parseFloat(DOM.inputScaleOld.value) || 100));
+  const sN = Math.max(10, Math.min(500, parseFloat(DOM.inputScaleNew.value) || 100));
   DOM.sliderScaleOld.value = Math.max(25, Math.min(200, sO));
   DOM.sliderScaleNew.value = Math.max(25, Math.min(200, sN));
   _applyScale();
 }
 function _applyScale() {
-  const sO = parseInt(DOM.inputScaleOld.value) || 100;
-  const sN = parseInt(DOM.inputScaleNew.value) || 100;
+  const sO = parseFloat(DOM.inputScaleOld.value) || 100;
+  const sN = parseFloat(DOM.inputScaleNew.value) || 100;
   if (DOM.transformScope.value === 'all') {
     for (let p = 1; p <= maxPages; p++) { clearPageTransform(p); setPageScale(p, sO, sN); }
   } else {
@@ -914,7 +914,7 @@ function resetScale() {
   if (rawOld || rawNew) recolorAndComposite();
 }
 function matchScale() {
-  const sN = parseInt(DOM.inputScaleNew.value) || 100;
+  const sN = parseFloat(DOM.inputScaleNew.value) || 100;
   if (DOM.transformScope.value === 'all') {
     for (let p = 1; p <= maxPages; p++) { const s = getPageScale(p); setPageScale(p, sN, s.new); }
   } else {
@@ -1094,7 +1094,7 @@ function loadTransformUI() {
 // Legacy alias — many call sites use loadOffsetUI
 function loadOffsetUI() { loadTransformUI(); }
 function syncSliders() {
-  const x=parseInt(DOM.offsetX.value)||0, y=parseInt(DOM.offsetY.value)||0;
+  const x=parseFloat(DOM.offsetX.value)||0, y=parseFloat(DOM.offsetY.value)||0;
   DOM.offsetXSlider.value = Math.max(parseInt(DOM.offsetXSlider.min),Math.min(parseInt(DOM.offsetXSlider.max),x));
   DOM.offsetYSlider.value = Math.max(parseInt(DOM.offsetYSlider.min),Math.min(parseInt(DOM.offsetYSlider.max),y));
 }
@@ -1111,7 +1111,7 @@ function updateSliderRange() {
   syncSliders();
 }
 function applyOffset() {
-  const x=parseInt(DOM.offsetX.value)||0, y=parseInt(DOM.offsetY.value)||0;
+  const x=parseFloat(DOM.offsetX.value)||0, y=parseFloat(DOM.offsetY.value)||0;
   syncSliders();
   // Clear affine transform so manual offset takes effect via standard path
   if (DOM.transformScope.value==='all') { for(let p=1;p<=maxPages;p++) { clearPageTransform(p); setPageOffset(p,x,y); } }
