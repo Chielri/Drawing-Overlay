@@ -3116,7 +3116,7 @@ function solveAffine(src, dst) {
 // Snap small rotations (<1°) to zero in an affine transform.
 // Decomposes into rotation + scale + translation, snaps rotation, recomposes.
 // srcPts/dstPts: the 3 point pairs used to compute the affine (for recomputing translation).
-function snapAffineRotation(t, srcPts, dstPts) {
+function snapAffineTransform(t, srcPts, dstPts, expectedScale) {
   // Decompose: rotation angle from atan2(c, a) (where a=cos*sx, c=sin*sx)
   const angle = Math.atan2(t.c, t.a); // radians
   const angleDeg = angle * 180 / Math.PI;
@@ -3124,11 +3124,22 @@ function snapAffineRotation(t, srcPts, dstPts) {
 
   // Rotation is < 1° — remove it, keep only scale + translation
   // Extract scale: sx = sqrt(a² + c²), sy = sqrt(b² + d²)
-  const sx = Math.sqrt(t.a * t.a + t.c * t.c);
-  const sy = Math.sqrt(t.b * t.b + t.d * t.d);
+  let sx = Math.sqrt(t.a * t.a + t.c * t.c);
+  let sy = Math.sqrt(t.b * t.b + t.d * t.d);
   // Determine sign of sy (check if the transform flips)
   const det = t.a * t.d - t.b * t.c;
   const sySign = det < 0 ? -1 : 1;
+
+  // Snap scale: if sx and sy are both within 1% of expectedScale, snap to it.
+  // This eliminates minor scale artifacts from imprecise clicking.
+  if (expectedScale > 0) {
+    const tol = expectedScale * 0.01;
+    if (Math.abs(sx - expectedScale) < tol && Math.abs(sy - expectedScale) < tol) {
+      sx = expectedScale;
+      sy = expectedScale;
+    }
+  }
+
   // Recompute translation so centroids still map correctly
   const csx = (srcPts[0].x + srcPts[1].x + srcPts[2].x) / 3;
   const csy = (srcPts[0].y + srcPts[1].y + srcPts[2].y) / 3;
@@ -3235,8 +3246,8 @@ function computeAndApplyAlign3() {
     return;
   }
 
-  // Snap small rotations (<1°) caused by imprecise clicking
-  transform = snapAffineRotation(transform, rawNewPts, adjOld);
+  // Snap small rotations (<1°) and scale close to sO caused by imprecise clicking
+  transform = snapAffineTransform(transform, rawNewPts, adjOld, sO);
 
   console.log('3-point align: fresh solve from raw pixels', {
     hadExistingAffine: hadAffine,
