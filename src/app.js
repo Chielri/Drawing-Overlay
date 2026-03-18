@@ -95,7 +95,6 @@ let align3Active = false;      // picking mode on/off
 let align3Phase = 'old';       // 'old' or 'new' — which PDF we're picking points for
 let align3PointsOld = [];      // [{x,y}, ...] up to 3
 let align3PointsNew = [];      // [{x,y}, ...] up to 3
-let _align3SavedState = null;  // saved transform state for cancel/restore
 
 // LRU cache management — uses a Set for O(1) has/delete + Array for order
 let lruOrder = [];
@@ -1788,37 +1787,6 @@ function clearPageTransform(page) { delete pageTransforms[String(page)]; }
 function startAlign3() {
   if (align3Active) { cancelAlign3(); return; }
   if (!rawOld || !rawNew) { alert('Compare PDFs first before aligning.'); return; }
-
-  // Save current transform state so we can restore on cancel
-  const scope = DOM.transformScope.value;
-  const pages = scope === 'all' ? Array.from({length:maxPages},(_,i)=>i+1) : [currentPage];
-  _align3SavedState = { pages: pages.map(String), transforms: {}, offsets: {}, rotations: {}, scales: {} };
-  let hadTransform = false;
-  for (const p of pages) {
-    const pk = String(p);
-    const xf = getPageTransform(p);
-    if (xf) {
-      hadTransform = true;
-      _align3SavedState.transforms[pk] = { ...xf };
-    }
-    if (pageOffsets[pk]) _align3SavedState.offsets[pk] = { ...pageOffsets[pk] };
-    if (pageRotations[pk] !== undefined) _align3SavedState.rotations[pk] = pageRotations[pk];
-    if (pageScales[pk]) _align3SavedState.scales[pk] = { ...pageScales[pk] };
-  }
-
-  // Clear existing transform so the user picks points on the standard
-  // (non-affine) canvas. Every alignment is a fresh solve.
-  if (hadTransform) {
-    for (const p of pages) {
-      clearPageTransform(p);
-      delete pageOffsets[String(p)];
-      delete pageRotations[String(p)];
-      delete pageScales[String(p)];
-    }
-    loadTransformUI();
-    _doRecolorAndComposite();
-  }
-
   align3Active = true;
   align3Phase = 'old';
   align3PointsOld = [];
@@ -1830,20 +1798,6 @@ function startAlign3() {
 }
 
 function cancelAlign3() {
-  // Restore saved transform state if we cleared it on start
-  if (_align3SavedState) {
-    const s = _align3SavedState;
-    for (const pk of s.pages) {
-      if (s.transforms[pk]) setPageTransform(parseInt(pk), s.transforms[pk]);
-      if (s.offsets[pk]) pageOffsets[pk] = s.offsets[pk];
-      if (s.rotations[pk] !== undefined) pageRotations[pk] = s.rotations[pk];
-      if (s.scales[pk]) pageScales[pk] = s.scales[pk];
-    }
-    _align3SavedState = null;
-    loadTransformUI();
-    if (rawOld || rawNew) _doRecolorAndComposite();
-  }
-
   align3Active = false;
   align3Phase = 'old';
   align3PointsOld = [];
@@ -2053,33 +2007,94 @@ function snapAffineRotation(t, srcPts, dstPts) {
 }
 
 function computeAndApplyAlign3() {
-  // startAlign3() clears any existing affine so we always work on the standard
-  // (non-affine) canvas. This means every alignment is a fresh "first" alignment.
-  // solveAffine maps click coords, then we bake sN so stored affine maps rawPx.
+  // We want a stored affine that maps rawNewPx → oldCanvasPos (before shift).
+  // composite() uses: ctx.setTransform(xform...) then drawImage(newImg, 0, 0),
+  // so the stored affine must map raw pixel coords directly.
 
+  const existingXform = getPageTransform(currentPage);
   const ps = getPageScale(currentPage);
+  const sO = ps.old / 100;
   const sN = ps.new / 100;
   let transform;
 
-  const newPts = align3PointsNew;
-  const oldPts = align3PointsOld;
+  if (existingXform && rawOld && rawNew) {
+    // ── SECOND+ ALIGNMENT (existing affine) ──
+    // Both old and new clicks are in canvas coords. Remove the canvas shift,
+    // then solve a correction affine and compose it with the existing one.
 
-  transform = solveAffine(newPts, oldPts);
-  if (!transform) {
-    alert('Points are collinear — pick non-collinear points.');
-    cancelAlign3();
-    return;
+    const wO0 = rawOld.width * sO, hO0 = rawOld.height * sO;
+    // Recompute canvas shift (same logic as composite's affine branch)
+    const corners = [[0,0],[rawNew.width,0],[0,rawNew.height],[rawNew.width,rawNew.height]];
+    let minX = 0, minY = 0, maxX = wO0, maxY = hO0;
+    corners.forEach(([px, py]) => {
+      const cx2 = existingXform.a * px + existingXform.b * py + existingXform.e;
+      const cy2 = existingXform.c * px + existingXform.d * py + existingXform.f;
+      maxX = Math.max(maxX, cx2); maxY = Math.max(maxY, cy2);
+      minX = Math.min(minX, cx2); minY = Math.min(minY, cy2);
+    });
+    const shiftX = minX < 0 ? -minX : 0;
+    const shiftY = minY < 0 ? -minY : 0;
+
+    // Remove canvas shift from both point sets
+    const adjNew = align3PointsNew.map(pt => ({ x: pt.x - shiftX, y: pt.y - shiftY }));
+    const adjOld = align3PointsOld.map(pt => ({ x: pt.x - shiftX, y: pt.y - shiftY }));
+
+    // Solve correction: maps new-canvas-pos → old-canvas-pos
+    const correction = solveAffine(adjNew, adjOld);
+    if (!correction) {
+      alert('Points are collinear — pick non-collinear points.');
+      cancelAlign3();
+      return;
+    }
+
+    // Compose: final = correction ∘ existingXform
+    // final(rawPx) = correction(existingXform(rawPx)) = oldCanvasPos
+    const E = existingXform, C = correction;
+    transform = {
+      a: C.a * E.a + C.b * E.c,
+      b: C.a * E.b + C.b * E.d,
+      c: C.c * E.a + C.d * E.c,
+      d: C.c * E.b + C.d * E.d,
+      e: C.a * E.e + C.b * E.f + C.e,
+      f: C.c * E.e + C.d * E.f + C.f
+    };
+
+    // Snap small rotations: compute raw pixel coords for centroid matching
+    const det = E.a * E.d - E.b * E.c;
+    if (Math.abs(det) > 1e-10) {
+      const rawNewPts = adjNew.map(pt => {
+        const px = (E.d * (pt.x - E.e) - E.b * (pt.y - E.f)) / det;
+        const py = (-E.c * (pt.x - E.e) + E.a * (pt.y - E.f)) / det;
+        return { x: px, y: py };
+      });
+      transform = snapAffineRotation(transform, rawNewPts, adjOld);
+    }
+
+    // No baking needed — the composed affine already maps rawPx → canvas pos
+  } else {
+    // ── FIRST ALIGNMENT (no existing affine) ──
+    // In the standard composite path, new is drawn at sN * rawPx + offset.
+    // solveAffine maps click coords, then we bake sN so stored affine maps rawPx.
+    let newPts = align3PointsNew;
+    let oldPts = align3PointsOld;
+
+    transform = solveAffine(newPts, oldPts);
+    if (!transform) {
+      alert('Points are collinear — pick non-collinear points.');
+      cancelAlign3();
+      return;
+    }
+
+    // Snap tiny rotations (<1°) caused by imprecise clicking
+    transform = snapAffineRotation(transform, newPts, oldPts);
+
+    // Pre-bake sN into the linear components so the stored affine maps
+    // raw image pixels → canvas coords. composite() applies it directly.
+    transform.a *= sN;
+    transform.b *= sN;
+    transform.c *= sN;
+    transform.d *= sN;
   }
-
-  // Snap tiny rotations (<1°) caused by imprecise clicking
-  transform = snapAffineRotation(transform, newPts, oldPts);
-
-  // Pre-bake sN into the linear components so the stored affine maps
-  // raw image pixels → canvas coords. composite() applies it directly.
-  transform.a *= sN;
-  transform.b *= sN;
-  transform.c *= sN;
-  transform.d *= sN;
 
   // ── Decompose for UI display ──
   // The stored affine maps rawPx → canvas. Extract rotation, scale, offset.
@@ -2114,8 +2129,7 @@ function computeAndApplyAlign3() {
     setPageScale(currentPage, ps.old, scaleNewPercent);
   }
 
-  // End picking mode — discard saved state (alignment succeeded, no need to restore)
-  _align3SavedState = null;
+  // End picking mode — clear markers since alignment is applied to offset/scale/rotation
   align3Active = false;
   align3PointsOld = [];
   align3PointsNew = [];
