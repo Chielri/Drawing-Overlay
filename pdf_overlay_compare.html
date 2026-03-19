@@ -2414,7 +2414,7 @@ async function loadPreset(e) {
       const t = p.pageTransforms[k];
       if (t && typeof t.a === 'number' && typeof t.d === 'number' &&
           isFinite(t.a) && isFinite(t.b) && isFinite(t.c) && isFinite(t.d) && isFinite(t.e) && isFinite(t.f)) {
-        pageTransforms[k] = { a: t.a, b: t.b, c: t.c, d: t.d, e: t.e, f: t.f };
+        setPageTransform(k, t); // enforces similarity constraint
       } else {
         console.warn('Preset: skipping invalid transform for page', k, t);
       }
@@ -2914,7 +2914,13 @@ function changeThumbPPI() {
 //  3-POINT ALIGNMENT
 // ═══════════════════════════════════════
 function getPageTransform(page) { return pageTransforms[String(page)] || null; }
-function setPageTransform(page, t) { pageTransforms[String(page)] = t; }
+// Enforce similarity constraint (no shear/skew) on every store.
+// Similarity: a == d, b == -c. Average the pairs to project any drift.
+function setPageTransform(page, t) {
+  const a = (t.a + t.d) / 2;
+  const c = (t.c - t.b) / 2;
+  pageTransforms[String(page)] = { a, b: -c, c, d: a, e: t.e, f: t.f };
+}
 function clearPageTransform(page) { delete pageTransforms[String(page)]; }
 
 function startAlign3() {
