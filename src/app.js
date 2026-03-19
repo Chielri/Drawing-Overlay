@@ -1283,7 +1283,7 @@ async function loadPreset(e) {
       const t = p.pageTransforms[k];
       if (t && typeof t.a === 'number' && typeof t.d === 'number' &&
           isFinite(t.a) && isFinite(t.b) && isFinite(t.c) && isFinite(t.d) && isFinite(t.e) && isFinite(t.f)) {
-        pageTransforms[k] = { a: t.a, b: t.b, c: t.c, d: t.d, e: t.e, f: t.f };
+        setPageTransform(k, t); // enforces similarity constraint
       } else {
         console.warn('Preset: skipping invalid transform for page', k, t);
       }
@@ -1783,7 +1783,13 @@ function changeThumbPPI() {
 //  3-POINT ALIGNMENT
 // ═══════════════════════════════════════
 function getPageTransform(page) { return pageTransforms[String(page)] || null; }
-function setPageTransform(page, t) { pageTransforms[String(page)] = t; }
+// Enforce similarity constraint (no shear/skew) on every store.
+// Similarity: a == d, b == -c. Average the pairs to project any drift.
+function setPageTransform(page, t) {
+  const a = (t.a + t.d) / 2;
+  const c = (t.c - t.b) / 2;
+  pageTransforms[String(page)] = { a, b: -c, c, d: a, e: t.e, f: t.f };
+}
 function clearPageTransform(page) { delete pageTransforms[String(page)]; }
 
 function startAlign3() {
@@ -1982,41 +1988,78 @@ function solveAffine(src, dst) {
   return { a, b, c, d: dd, e, f };
 }
 
-// Snap small rotations (<1°) to zero in an affine transform.
-// Decomposes into rotation + scale + translation, snaps rotation, recomposes.
-// srcPts/dstPts: the 3 point pairs used to compute the affine (for recomputing translation).
+// Solve least-squares similarity transform (uniform scale + rotation + translation).
+// Maps srcPts → dstPts with minimum error, constrained to no shear/skew.
+// Returns {a, b, c, d, e, f} where a=s*cos, b=-s*sin, c=s*sin, d=s*cos.
+function solveSimilarity(srcPts, dstPts) {
+  const n = srcPts.length;
+  // Compute centroids
+  let csx = 0, csy = 0, cdx = 0, cdy = 0;
+  for (let i = 0; i < n; i++) {
+    csx += srcPts[i].x; csy += srcPts[i].y;
+    cdx += dstPts[i].x; cdy += dstPts[i].y;
+  }
+  csx /= n; csy /= n; cdx /= n; cdy /= n;
+
+  // Solve for a, b in least-squares: dst' = [a -b; b a] * src'
+  // Normal equations: a = Σ(x'·X' + y'·Y') / S, b = Σ(-y'·X' + x'·Y') / S
+  // where S = Σ(x'² + y'²)
+  let S = 0, sumA = 0, sumB = 0;
+  for (let i = 0; i < n; i++) {
+    const sx = srcPts[i].x - csx, sy = srcPts[i].y - csy;
+    const dx = dstPts[i].x - cdx, dy = dstPts[i].y - cdy;
+    S += sx * sx + sy * sy;
+    sumA += sx * dx + sy * dy;
+    sumB += -sy * dx + sx * dy;
+  }
+  if (Math.abs(S) < 1e-10) return null; // degenerate (all source points coincide)
+
+  const a = sumA / S;  // s * cos(θ)
+  const b = sumB / S;  // s * sin(θ)
+  const e = cdx - (a * csx - b * csy);
+  const f = cdy - (b * csx + a * csy);
+  return { a: a, b: -b, c: b, d: a, e, f };
+}
+
+// Snap rotation (<1° → 0) and/or scale (within 1% of expected → exact) in a similarity transform.
+// srcPts/dstPts: the point pairs used to compute the transform (for recomputing translation).
 function snapAffineTransform(t, srcPts, dstPts, expectedScale) {
-  // Decompose: rotation angle from atan2(c, a) (where a=cos*sx, c=sin*sx)
   const angle = Math.atan2(t.c, t.a); // radians
   const angleDeg = angle * 180 / Math.PI;
-  if (Math.abs(angleDeg) >= 1) return t; // rotation is significant, keep as-is
 
-  // Rotation is < 1° — remove it, keep only scale + translation
-  // Extract scale: sx = sqrt(a² + c²), sy = sqrt(b² + d²)
-  let sx = Math.sqrt(t.a * t.a + t.c * t.c);
-  let sy = Math.sqrt(t.b * t.b + t.d * t.d);
-  // Determine sign of sy (check if the transform flips)
-  const det = t.a * t.d - t.b * t.c;
-  const sySign = det < 0 ? -1 : 1;
+  // Extract uniform scale (should be same for x and y in a similarity transform)
+  let scale = Math.sqrt(t.a * t.a + t.c * t.c);
 
-  // Snap scale: if sx and sy are both within 1% of expectedScale, snap to it.
-  // This eliminates minor scale artifacts from imprecise clicking.
+  let snapRot = Math.abs(angleDeg) < 1;
+  let snapScale = false;
+
+  // Snap scale if within 1% of expectedScale
   if (expectedScale > 0) {
     const tol = expectedScale * 0.01;
-    if (Math.abs(sx - expectedScale) < tol && Math.abs(sy - expectedScale) < tol) {
-      sx = expectedScale;
-      sy = expectedScale;
+    if (Math.abs(scale - expectedScale) < tol) {
+      scale = expectedScale;
+      snapScale = true;
     }
   }
+
+  if (!snapRot && !snapScale) return t; // nothing to snap
+
+  // Recompose with snapped values
+  const cosR = snapRot ? 1 : Math.cos(angle);
+  const sinR = snapRot ? 0 : Math.sin(angle);
+  const newA = cosR * scale;
+  const newB = -sinR * scale;
+  const newC = sinR * scale;
+  const newD = cosR * scale;
 
   // Recompute translation so centroids still map correctly
   const csx = (srcPts[0].x + srcPts[1].x + srcPts[2].x) / 3;
   const csy = (srcPts[0].y + srcPts[1].y + srcPts[2].y) / 3;
   const cdx = (dstPts[0].x + dstPts[1].x + dstPts[2].x) / 3;
   const cdy = (dstPts[0].y + dstPts[1].y + dstPts[2].y) / 3;
-  const newE = cdx - sx * csx;
-  const newF = cdy - sySign * sy * csy;
-  return { a: sx, b: 0, c: 0, d: sySign * sy, e: newE, f: newF };
+  const newE = cdx - (newA * csx + newB * csy);
+  const newF = cdy - (newC * csx + newD * csy);
+  return { a: newA, b: newB, c: newC, d: newD, e: newE, f: newF };
 }
 
 function computeAndApplyAlign3() {
@@ -2106,16 +2149,17 @@ function computeAndApplyAlign3() {
     y: (-E.c * (pt.x - E.e) + E.a * (pt.y - E.f)) / det
   }));
 
-  // Solve fresh affine: rawNewPx → adjOld (pre-shift old canvas position)
+  // Solve least-squares similarity transform: rawNewPx → adjOld
+  // Uses uniform scale + rotation (no shear/skew) to avoid distortion from click imprecision.
   // adjOld = sO * rawOldPx, which is where old features sit in pre-shift canvas.
-  transform = solveAffine(rawNewPts, adjOld);
+  transform = solveSimilarity(rawNewPts, adjOld);
   if (!transform) {
-    alert('Points are collinear — pick non-collinear points.');
+    alert('Points are coincident — pick distinct points.');
     cancelAlign3();
     return;
   }
 
-  // Snap small rotations (<1°) and scale close to sO caused by imprecise clicking
+  // Snap small rotations (<1° → 0) and scale close to sO caused by imprecise clicking
   transform = snapAffineTransform(transform, rawNewPts, adjOld, sO);
 
   console.log('3-point align: fresh solve from raw pixels', {
@@ -2127,17 +2171,15 @@ function computeAndApplyAlign3() {
   });
 
   // ── Decompose for UI display ──
-  // The stored affine maps rawPx → canvas. Extract rotation, scale, offset.
+  // The stored transform is a similarity: uniform scale + rotation + translation.
   const rotRad = Math.atan2(transform.c, transform.a);
   const rotDeg = Math.round(rotRad * 180 / Math.PI * 100) / 100;
-  const effSx = Math.sqrt(transform.a * transform.a + transform.c * transform.c);
-  const effSy = Math.sqrt(transform.b * transform.b + transform.d * transform.d);
-  // effSx includes sN baked in, so display scale = effSx * 100 (percentage of raw)
-  let scaleNewPercent = Math.round((effSx + effSy) / 2 * 100 * 10) / 10;
-  if (Math.abs(scaleNewPercent - Math.round(scaleNewPercent)) < 0.5) scaleNewPercent = Math.round(scaleNewPercent);
+  const effScale = Math.sqrt(transform.a * transform.a + transform.c * transform.c);
+  // effScale includes sN baked in, so display scale = effScale * 100 (percentage of raw)
+  let scaleNewPercent = Math.round(effScale * 100 * 10) / 10;
+  if (Math.abs(scaleNewPercent - Math.round(scaleNewPercent)) < 0.15) scaleNewPercent = Math.round(scaleNewPercent);
   // Compute display offset from affine translation (rotation around image center)
   const imgW = rawNew.width, imgH = rawNew.height;
-  const effScale = (effSx + effSy) / 2;
   const wN_eff = imgW * effScale, hN_eff = imgH * effScale;
   const cosR = Math.cos(rotRad), sinR = Math.sin(rotRad);
   const cxN = wN_eff / 2, cyN = hN_eff / 2;
