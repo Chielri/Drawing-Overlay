@@ -1,23 +1,19 @@
 permissions:
   contents: write
-
 name: Build HTML
-
 on:
+  workflow_dispatch:
   push:
     paths:
       - 'src/**'
       - 'build.sh'
-
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - name: Build single-file HTML
         run: ./build.sh
-
       - name: Commit built file if changed
         run: |
           git diff --quiet pdf_overlay_compare.html && exit 0
