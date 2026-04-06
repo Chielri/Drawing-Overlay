@@ -616,6 +616,8 @@ async function renderPage(num) {
   if (!rawOld && !rawNew) return;
   touchLRU(num);
   invalidateRecolor();
+  // Yield to let UI update (e.g. "Re-rendering…" text) before heavy recolor
+  await sleep(0);
   _doRecolorAndComposite();
   if (!hasRenderedOnce) { hasRenderedOnce = true; requestAnimationFrame(() => zoomFit()); }
 }
@@ -873,27 +875,17 @@ function composite(w, h, imgO, imgN) {
 //  ZOOM
 // ═══════════════════════════════════════
 function applyZoom() {
-  const w = DOM.canvasOutput.width, h = DOM.canvasOutput.height;
-  // Use CSS transform for GPU-accelerated zoom instead of resizing
-  DOM.canvasContainer.style.width = w+'px'; DOM.canvasContainer.style.height = h+'px';
-  DOM.canvasContainer.style.transform = 'scale('+currentZoom+')';
+  const dw = DOM.canvasOutput.width*currentZoom, dh = DOM.canvasOutput.height*currentZoom;
+  DOM.canvasContainer.style.width = dw+'px'; DOM.canvasContainer.style.height = dh+'px';
   DOM.canvasOutput.style.width = '100%'; DOM.canvasOutput.style.height = '100%';
-  // Spacer must reflect the scaled size so scroll area is correct
-  const dw = w*currentZoom, dh = h*currentZoom;
   DOM.canvasPad.style.minWidth = (dw+48)+'px'; DOM.canvasPad.style.minHeight = (dh+48)+'px';
   DOM.zoomLabel.textContent = Math.round(currentZoom*getRenderScale()*100)+'%';
 }
 function applySbsZoom() {
   if (mode !== 'sidebyside') return;
   const cO = DOM.sbsCanvasOld, cN = DOM.sbsCanvasNew;
-  // Use CSS transform for GPU-accelerated SBS zoom
-  const wrapO = cO.closest('.sbs-canvas-wrap'), wrapN = cN.closest('.sbs-canvas-wrap');
-  cO.style.width = ''; cO.style.height = '';
-  cN.style.width = ''; cN.style.height = '';
-  cO.style.transformOrigin = '0 0'; cO.style.transform = 'scale('+currentZoom+')';
-  cN.style.transformOrigin = '0 0'; cN.style.transform = 'scale('+currentZoom+')';
-  if (wrapO) { wrapO.style.minWidth = (cO.width*currentZoom+48)+'px'; wrapO.style.minHeight = (cO.height*currentZoom+48)+'px'; }
-  if (wrapN) { wrapN.style.minWidth = (cN.width*currentZoom+48)+'px'; wrapN.style.minHeight = (cN.height*currentZoom+48)+'px'; }
+  cO.style.width = (cO.width*currentZoom)+'px'; cO.style.height = (cO.height*currentZoom)+'px';
+  cN.style.width = (cN.width*currentZoom)+'px'; cN.style.height = (cN.height*currentZoom)+'px';
   // Sync draw layer sizes
   syncDrawLayerSize('old');
   syncDrawLayerSize('new');
@@ -1074,6 +1066,7 @@ async function changePPI() {
   cachePPI = newPPI;
   DOM.btnCompare.textContent = 'Re-rendering…';
   hasRenderedOnce = false;
+  await sleep(0); // yield so button text update paints
   await renderPage(currentPage);
   DOM.btnCompare.textContent = 'Compare Revisions';
   updateCacheUI();
@@ -2294,8 +2287,8 @@ function syncDrawLayerSize(side) {
   if (draw.width !== src.width || draw.height !== src.height) {
     draw.width = src.width; draw.height = src.height;
   }
-  draw.style.transformOrigin = '0 0';
-  draw.style.transform = src.style.transform || '';
+  draw.style.width = src.style.width;
+  draw.style.height = src.style.height;
 }
 // Cursor map per tool
 const _toolCursors = {
@@ -2375,10 +2368,10 @@ function renderDrawLayer(side) {
     canvas.width = srcCanvas.width;
     canvas.height = srcCanvas.height;
   }
-  // Match CSS display size (overlay uses 100% from CSS, SBS uses transform)
+  // Match CSS display size (overlay uses 100% from CSS)
   if (side !== 'overlay') {
-    canvas.style.transformOrigin = '0 0';
-    canvas.style.transform = srcCanvas.style.transform || '';
+    canvas.style.width = srcCanvas.style.width;
+    canvas.style.height = srcCanvas.style.height;
   }
   const strokes = drawStrokesFor();
   const hasContent = strokes.length > 0 || _drawCurrent;
