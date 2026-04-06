@@ -16,6 +16,7 @@ const DOM = {
   labelScaleOld: $('label-scale-old'), labelScaleNew: $('label-scale-new'),
   sliderOpacityOld: $('slider-opacity-old'), sliderOpacityNew: $('slider-opacity-new'),
   valOpacityOld: $('val-opacity-old'), valOpacityNew: $('val-opacity-new'),
+  sliderSharpness: $('slider-sharpness'), valSharpness: $('val-sharpness'),
   sliderScaleOld: $('slider-scale-old'), sliderScaleNew: $('slider-scale-new'),
   inputScaleOld: $('input-scale-old'), inputScaleNew: $('input-scale-new'),
   transformScope: $('transform-scope'),
@@ -221,7 +222,8 @@ const HARDCODED_DEFAULTS = {
   offsetRange: 500, transformScope: 'page',
   thumbPPI: 18,
   memLimitMB: 4096,
-  scaleOld: 100, scaleNew: 100
+  scaleOld: 100, scaleNew: 100,
+  sharpness: 0
 };
 
 function getDefaults() {
@@ -258,6 +260,8 @@ function applyDefaults(d) {
   DOM.sliderScaleNew.value = Math.max(25, Math.min(200, d.scaleNew || 100));
   DOM.jpegQuality.value = d.jpegQuality || 85;
   updateJpegQuality();
+  DOM.sliderSharpness.value = d.sharpness || 0;
+  DOM.valSharpness.textContent = (d.sharpness || 0) + '%';
   syncColors();
 }
 
@@ -272,7 +276,8 @@ function gatherUISettings() {
     thumbPPI, memLimitMB: cacheMemLimitMB,
     scaleOld: parseFloat(DOM.inputScaleOld.value) || 100,
     scaleNew: parseFloat(DOM.inputScaleNew.value) || 100,
-    jpegQuality: parseInt(DOM.jpegQuality.value) || 85
+    jpegQuality: parseInt(DOM.jpegQuality.value) || 85,
+    sharpness: parseInt(DOM.sliderSharpness.value) || 0
   };
 }
 
@@ -643,14 +648,19 @@ function recolor(src, rgb) {
   const len = srcData.length;
   const out = new ImageData(src.width, src.height);
   const tR = rgb[0], tG = rgb[1], tB = rgb[2];
+  const sharpness = parseInt(DOM.sliderSharpness.value) || 0;
 
   // Precompute LUT: luminance (0-255) → packed RGBA as uint32
+  // Sharpness applies a power curve to boost contrast on text/lines:
+  //   gamma < 1 pushes mid-darkness toward full opacity → crisper edges
+  const gamma = sharpness > 0 ? 1 / (1 + sharpness / 100 * 9) : 1; // 1.0 → 0.1
   const lut = new Uint32Array(256);
   for (let lum = 0; lum < 256; lum++) {
-    const dk = 1 - lum / 255;
+    let dk = 1 - lum / 255;
     if (dk < 0.03) {
       lut[lum] = _isLittleEndian ? 0x00FFFFFF : 0xFFFFFF00;
     } else {
+      if (gamma < 1) dk = Math.pow(dk, gamma);
       const invDk = 1 - dk;
       const r = (tR*dk + 255*invDk + 0.5) | 0;
       const g = (tG*dk + 255*invDk + 0.5) | 0;
@@ -908,6 +918,11 @@ function updateOpacity() {
   DOM.valOpacityNew.textContent = DOM.sliderOpacityNew.value+'%';
   syncColors();
   _debouncedComposite();
+}
+function updateSharpness() {
+  DOM.valSharpness.textContent = DOM.sliderSharpness.value + '%';
+  invalidateRecolor();
+  if (rawOld || rawNew) recolorAndComposite();
 }
 // Scale: slider → input sync → apply
 function sliderScale() {
@@ -1287,6 +1302,7 @@ async function loadPreset(e) {
   if (p.offsetRange) { DOM.offsetRange.value=p.offsetRange; updateSliderRange(); }
   if (p.transformScope) DOM.transformScope.value=p.transformScope;
   else if (p.offsetScope) DOM.transformScope.value=p.offsetScope;
+  if (p.sharpness!=null) { DOM.sliderSharpness.value=p.sharpness; DOM.valSharpness.textContent=p.sharpness+'%'; }
   if (p.thumbPPI) { thumbPPI=p.thumbPPI; DOM.thumbPPIInput.value=thumbPPI; }
   if (p.memLimitMB) { cacheMemLimitMB=p.memLimitMB; DOM.memLimit.value=cacheMemLimitMB; }
   // Legacy: scaleScope fallback handled above via transformScope || offsetScope

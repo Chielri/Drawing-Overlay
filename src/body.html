@@ -82,6 +82,12 @@
       <input type="range" id="slider-opacity-new" min="0" max="100" value="70" oninput="updateOpacity()" />
     </div>
     <div class="control-group">
+      <div class="section-title">Line Sharpness</div>
+      <div class="control-row"><span class="control-label">Threshold</span><span class="control-value" id="val-sharpness">0%</span></div>
+      <input type="range" id="slider-sharpness" min="0" max="100" value="0" oninput="updateSharpness()" />
+      <div class="ppi-hint">Boost contrast on text &amp; lines. Higher = crisper edges, may amplify noise.</div>
+    </div>
+    <div class="control-group">
       <div class="section-title">Transform — New Revision</div>
       <div class="transform-scope-row"><span class="offset-scope">Apply to: <select id="transform-scope"><option value="page">This page only</option><option value="all">All pages</option></select></span>
         <button class="offset-btn" onclick="resetAllTransforms()">Reset All</button>
