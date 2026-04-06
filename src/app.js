@@ -670,6 +670,20 @@ function recolor(src, rgb) {
   return out;
 }
 
+// Resize canvas only when dimensions actually change — avoids GPU texture reallocation.
+// Setting canvas.width/height unconditionally deallocates + reallocates the backing store
+// every frame, which at 300 PPI means churning ~70MB of GPU memory per composite call.
+function _prepareCtx(canvas, w, h) {
+  if (canvas.width !== w || canvas.height !== h) {
+    canvas.width = w; canvas.height = h;
+  }
+  const ctx = canvas.getContext('2d');
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.globalAlpha = 1;
+  ctx.globalCompositeOperation = 'source-over';
+  return ctx;
+}
+
 // FIX: reuse temp canvases — skip putImageData when same ImageData is already on canvas
 function putImgToTempCanvas(img, tmpCanvas, tmpCtx) {
   if (tmpCanvas._lastImg === img) return tmpCanvas;
@@ -751,8 +765,7 @@ function composite(w, h, imgO, imgN) {
       const shiftY = minY < 0 ? -minY : 0;
       const canvasW = Math.ceil(maxX - minX);
       const canvasH = Math.ceil(maxY - minY);
-      out.width = canvasW; out.height = canvasH;
-      const ctx = out.getContext('2d');
+      const ctx = _prepareCtx(out, canvasW, canvasH);
       ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, canvasW, canvasH);
 
       const drawOldLayer = () => {
@@ -780,8 +793,7 @@ function composite(w, h, imgO, imgN) {
     const canvasH = Math.max(hO + (oy < 0 ? absOy : 0), hN + (oy > 0 ? oy : 0), totalH);
     const oldDx = ox<0?absOx:0, oldDy = oy<0?absOy:0;
     const newDx = ox>0?ox:0, newDy = oy>0?oy:0;
-    out.width = canvasW; out.height = canvasH;
-    const ctx = out.getContext('2d');
+    const ctx = _prepareCtx(out, canvasW, canvasH);
     ctx.fillStyle = '#fff'; ctx.fillRect(0,0,canvasW,canvasH);
 
     const drawOldLayer = () => {
@@ -814,22 +826,20 @@ function composite(w, h, imgO, imgN) {
     const newDxSbs = ox > 0 ? ox : 0,    newDySbs = oy > 0 ? oy : 0;
     // Old pane
     if (imgO && visOld) {
-      cOld.width = wO + oldDxSbs; cOld.height = hO + oldDySbs;
-      const ctxO = cOld.getContext('2d');
+      const ctxO = _prepareCtx(cOld, wO + oldDxSbs, hO + oldDySbs);
       ctxO.fillStyle = '#fff'; ctxO.fillRect(0,0,cOld.width,cOld.height);
       ctxO.globalAlpha = aO;
       ctxO.drawImage(putImgToTempCanvas(imgO,_tmpCanvasA,_tmpCtxA),0,0,imgO.width,imgO.height,oldDxSbs,oldDySbs,wO,hO);
       ctxO.globalAlpha = 1;
-    } else { cOld.width = 1; cOld.height = 1; }
+    } else if (cOld.width !== 1 || cOld.height !== 1) { cOld.width = 1; cOld.height = 1; }
     // New pane
     if (imgN && visNew) {
-      cNew.width = wN + newDxSbs; cNew.height = hN + newDySbs;
-      const ctxN = cNew.getContext('2d');
+      const ctxN = _prepareCtx(cNew, wN + newDxSbs, hN + newDySbs);
       ctxN.fillStyle = '#fff'; ctxN.fillRect(0,0,cNew.width,cNew.height);
       ctxN.globalAlpha = aN;
       ctxN.drawImage(putImgToTempCanvas(imgN,_tmpCanvasB,_tmpCtxB),0,0,imgN.width,imgN.height,newDxSbs,newDySbs,wN,hN);
       ctxN.globalAlpha = 1;
-    } else { cNew.width = 1; cNew.height = 1; }
+    } else if (cNew.width !== 1 || cNew.height !== 1) { cNew.width = 1; cNew.height = 1; }
     // Update labels with colors
     DOM.sbsLabelOld.style.background = DOM.colorOld.value;
     DOM.sbsLabelNew.style.background = DOM.colorNew.value;
@@ -839,8 +849,7 @@ function composite(w, h, imgO, imgN) {
       renderDrawLayer('overlay');
     }
     // Also render to the main output canvas for export
-    out.width = Math.max(wO, wN); out.height = Math.max(hO, hN);
-    const ctx = out.getContext('2d');
+    const ctx = _prepareCtx(out, Math.max(wO, wN), Math.max(hO, hN));
     ctx.fillStyle = '#fff'; ctx.fillRect(0,0,out.width,out.height);
     if (imgO && visOld) { ctx.globalAlpha=aO; ctx.drawImage(cOld,0,0); }
     if (imgN && visNew) { ctx.globalAlpha=aN; ctx.drawImage(cNew,0,0); }
@@ -2346,9 +2355,11 @@ function renderDrawLayer(side) {
     canvas.style.width = srcCanvas.style.width;
     canvas.style.height = srcCanvas.style.height;
   }
+  const strokes = drawStrokesFor();
+  const hasContent = strokes.length > 0 || _drawCurrent;
   const ctx = canvas.getContext('2d');
   ctx.clearRect(0, 0, canvas.width, canvas.height);
-  const strokes = drawStrokesFor();
+  if (!hasContent) return;
   strokes.forEach(s => drawStrokeToCtx(ctx, s));
   if (_drawCurrent) {
     drawStrokeToCtx(ctx, _drawCurrent);
