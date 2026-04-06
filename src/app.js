@@ -130,6 +130,7 @@ const _tmpCanvasA = document.createElement('canvas');
 const _tmpCanvasB = document.createElement('canvas');
 const _tmpCtxA = _tmpCanvasA.getContext('2d');
 const _tmpCtxB = _tmpCanvasB.getContext('2d');
+const _isLittleEndian = new Uint8Array(new Uint32Array([0x01020304]).buffer)[0] === 0x04;
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 function isInputFocused() { const t = document.activeElement?.tagName; return t === 'INPUT' || t === 'SELECT' || t === 'TEXTAREA'; }
@@ -638,22 +639,33 @@ function invalidateRecolor() {
 }
 
 function recolor(src, rgb) {
-  const out = new ImageData(new Uint8ClampedArray(src.data), src.width, src.height);
-  const d = out.data;
+  const srcData = src.data;
+  const len = srcData.length;
+  const out = new ImageData(src.width, src.height);
   const tR = rgb[0], tG = rgb[1], tB = rgb[2];
-  const len = d.length;
-  // FIX: tighter loop — bitwise truncation, cached invDk
-  for (let i = 0; i < len; i += 4) {
-    const dk = 1 - (0.299*d[i] + 0.587*d[i+1] + 0.114*d[i+2]) / 255;
+
+  // Precompute LUT: luminance (0-255) → packed RGBA as uint32
+  const lut = new Uint32Array(256);
+  for (let lum = 0; lum < 256; lum++) {
+    const dk = 1 - lum / 255;
     if (dk < 0.03) {
-      d[i] = 255; d[i+1] = 255; d[i+2] = 255; d[i+3] = 0;
+      lut[lum] = _isLittleEndian ? 0x00FFFFFF : 0xFFFFFF00;
     } else {
       const invDk = 1 - dk;
-      d[i]   = (tR*dk + 255*invDk + 0.5) | 0;
-      d[i+1] = (tG*dk + 255*invDk + 0.5) | 0;
-      d[i+2] = (tB*dk + 255*invDk + 0.5) | 0;
-      d[i+3] = (dk*255 + 0.5) | 0;
+      const r = (tR*dk + 255*invDk + 0.5) | 0;
+      const g = (tG*dk + 255*invDk + 0.5) | 0;
+      const b = (tB*dk + 255*invDk + 0.5) | 0;
+      const a = (dk*255 + 0.5) | 0;
+      lut[lum] = _isLittleEndian ? (a << 24 | b << 16 | g << 8 | r)
+                                 : (r << 24 | g << 16 | b << 8 | a);
     }
+  }
+
+  // Process pixels: integer luminance + LUT lookup + uint32 write
+  const out32 = new Uint32Array(out.data.buffer);
+  for (let i = 0, j = 0; i < len; i += 4, j++) {
+    // Integer luminance: 77/256≈0.301, 150/256≈0.586, 29/256≈0.113
+    out32[j] = lut[(77*srcData[i] + 150*srcData[i+1] + 29*srcData[i+2]) >> 8];
   }
   return out;
 }
@@ -1395,11 +1407,12 @@ async function canvasToSmallestImage(canvas, jpegQuality) {
   return { data: jpegData, format: 'JPEG' };
 }
 
-const JSPDF_MAX_DIM = 14400;
 function pdfPageDims(w, h) {
-  const scale = Math.min(1, JSPDF_MAX_DIM / Math.max(w, h));
-  if (scale < 1) console.warn(`PDF page ${w}×${h}px exceeds jsPDF limit of ${JSPDF_MAX_DIM}. Scaling to ${Math.round(w*scale)}×${Math.round(h*scale)} in PDF (image quality preserved).`);
-  return { pw: w * scale, ph: h * scale, scale, clamped: scale < 1 };
+  // Convert canvas pixels back to 72-DPI PDF points.
+  // The image is rendered at getRenderScale() × 72 DPI, so dividing by that
+  // gives the true page size in points — always within jsPDF's 14400 limit.
+  const s = getRenderScale();
+  return { pw: w / s, ph: h / s, scale: 1 / s, clamped: false };
 }
 
 async function addCanvasImageToPdf(pdf, canvas, x, y, w, h) {
@@ -1412,7 +1425,7 @@ async function exportPDF() {
   const out=DOM.canvasOutput; if(!out.width) return alert('Nothing to export.');
   if (!await _ensureJsPDF()) return;
   const JsPDF = _getJsPDF();
-  const {pw, ph, clamped} = pdfPageDims(out.width, out.height);
+  const {pw, ph} = pdfPageDims(out.width, out.height);
   const o=pw>=ph?'landscape':'portrait';
   const pdf=new JsPDF({orientation:o,unit:'px',format:[pw,ph],compress:true});
   // Base overlay — auto-picks PNG or JPEG (whichever is smaller)
@@ -1425,23 +1438,20 @@ async function exportPDF() {
     pdf.addImage(pngData,'PNG',0,0,pw,ph,undefined,'FAST');
   }
   pdf.save(`overlay-page-${currentPage}.pdf`);
-  const info = `Export: ${img.format}, ${(img.data.byteLength/1048576).toFixed(1)} MB`;
-  if (clamped) console.warn(info + ` (PDF page scaled down to fit jsPDF ${JSPDF_MAX_DIM}px limit)`);
-  else console.log(info);
+  console.log(`Export: ${img.format}, ${(img.data.byteLength/1048576).toFixed(1)} MB`);
 }
 async function exportAllPDF() {
   if(!rawOld&&!rawNew) return alert('Nothing to export.');
   if (!_ensureJsPDF()) return;
   const JsPDF = _getJsPDF(), btn=$('btn-export-all'), origText=btn.textContent;
-  let pdf=null, totalBytes=0, anyClamped=false;
+  let pdf=null, totalBytes=0;
   const savedPage=currentPage;
   try {
     for(let p=1;p<=maxPages;p++) {
       btn.textContent=`${p}/${maxPages}…`; await sleep(30);
       currentPage=p; loadOffsetUI(); await renderPage(p);
       const c=DOM.canvasOutput;
-      const {pw, ph, clamped} = pdfPageDims(c.width, c.height);
-      if (clamped) anyClamped = true;
+      const {pw, ph} = pdfPageDims(c.width, c.height);
       const o=pw>=ph?'landscape':'portrait';
       if(p===1) pdf=new JsPDF({orientation:o,unit:'px',format:[pw,ph],compress:true});
       else pdf.addPage([pw,ph],o);
@@ -1457,9 +1467,7 @@ async function exportAllPDF() {
       }
     }
     pdf.save(`overlay-all-pages-${new Date().toISOString().slice(0,10)}.pdf`);
-    const info = `Export all: ${maxPages} pages, ~${(totalBytes/1048576).toFixed(1)} MB image data`;
-    if (anyClamped) console.warn(info + ` (some pages scaled down to fit jsPDF ${JSPDF_MAX_DIM}px limit)`);
-    else console.log(info);
+    console.log(`Export all: ${maxPages} pages, ~${(totalBytes/1048576).toFixed(1)} MB image data`);
   } finally {
     currentPage=savedPage; loadOffsetUI(); await renderPage(savedPage); updatePageNav();
     btn.textContent=origText;
