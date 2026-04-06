@@ -670,11 +670,13 @@ function recolor(src, rgb) {
   return out;
 }
 
-// FIX: reuse temp canvases instead of creating new ones each frame
+// FIX: reuse temp canvases — skip putImageData when same ImageData is already on canvas
 function putImgToTempCanvas(img, tmpCanvas, tmpCtx) {
+  if (tmpCanvas._lastImg === img) return tmpCanvas;
   if (tmpCanvas.width !== img.width) tmpCanvas.width = img.width;
   if (tmpCanvas.height !== img.height) tmpCanvas.height = img.height;
   tmpCtx.putImageData(img, 0, 0);
+  tmpCanvas._lastImg = img;
   return tmpCanvas;
 }
 
