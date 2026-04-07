@@ -967,10 +967,11 @@ function updateOpacity() {
   syncColors();
   _debouncedComposite();
 }
+const _debouncedRecolorComposite = debounce(() => { if (rawOld || rawNew) recolorAndComposite(); }, 30);
 function updateSharpness() {
   DOM.valSharpness.textContent = DOM.sliderSharpness.value + '%';
   invalidateRecolor();
-  if (rawOld || rawNew) recolorAndComposite();
+  _debouncedRecolorComposite();
 }
 // Scale: slider → input sync → apply
 function sliderScale() {
