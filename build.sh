@@ -53,18 +53,55 @@ injections = {
     'vendor/jszip.js':           'vendor/jszip.js',
     'vendor/pdfjs-worker-blob.js': 'vendor/pdfjs-worker-blob.js',
     'body.html':                 'body.html',
-    'app.js':                    'app.js',
 }
+
+# Build the app.js content by concatenating modules (in dependency order) + app.js
+# Modules are optional — if src/modules/ doesn't exist or is empty, just use app.js
+module_order = [
+    'modules/state.js',
+    'modules/utils.js',
+    'modules/cache.js',
+    'modules/render.js',
+    'modules/composite.js',
+    'modules/zoom.js',
+    'modules/crosshair.js',
+    'modules/transform.js',
+    'modules/align.js',
+    'modules/drawing.js',
+    'modules/navigation.js',
+    'modules/export.js',
+]
+
+app_parts = []
+for mod in module_order:
+    mod_path = os.path.join(src_dir, mod)
+    if os.path.isfile(mod_path):
+        with open(mod_path, 'r') as f:
+            app_parts.append(f'// ── {mod} ──\n' + f.read())
+
+# Always append the main app.js last
+app_path = os.path.join(src_dir, 'app.js')
+with open(app_path, 'r') as f:
+    app_parts.append(f.read())
+
+# Add concatenated app content as a special injection
+injections['app.js'] = None  # handled separately
+app_content = '\n'.join(app_parts)
 
 for marker, filepath in injections.items():
     placeholder = f'/* __INJECT:{marker}__ */'
-    full_path = os.path.join(src_dir, filepath)
-    with open(full_path, 'r') as f:
-        replacement = f.read()
 
     if placeholder not in content:
         print(f"WARNING: Marker not found: {placeholder}", file=sys.stderr)
         continue
+
+    if filepath is None:
+        # Special case: app.js is built from modules + app.js
+        replacement = app_content
+    else:
+        full_path = os.path.join(src_dir, filepath)
+        with open(full_path, 'r') as f:
+            replacement = f.read()
 
     content = content.replace(placeholder, replacement)
 
