@@ -16,6 +16,7 @@ const DOM = {
   labelScaleOld: $('label-scale-old'), labelScaleNew: $('label-scale-new'),
   sliderOpacityOld: $('slider-opacity-old'), sliderOpacityNew: $('slider-opacity-new'),
   valOpacityOld: $('val-opacity-old'), valOpacityNew: $('val-opacity-new'),
+  sliderSharpness: $('slider-sharpness'), valSharpness: $('val-sharpness'),
   sliderScaleOld: $('slider-scale-old'), sliderScaleNew: $('slider-scale-new'),
   inputScaleOld: $('input-scale-old'), inputScaleNew: $('input-scale-new'),
   transformScope: $('transform-scope'),
@@ -130,6 +131,11 @@ const _tmpCanvasA = document.createElement('canvas');
 const _tmpCanvasB = document.createElement('canvas');
 const _tmpCtxA = _tmpCanvasA.getContext('2d');
 const _tmpCtxB = _tmpCanvasB.getContext('2d');
+const _isLittleEndian = new Uint8Array(new Uint32Array([0x01020304]).buffer)[0] === 0x04;
+
+const MAX_CANVAS_DIM = 16384;       // max px per side (Safari limit)
+const MAX_CANVAS_PIXELS = 268435456; // max total pixels
+const RENDER_TIMEOUT_MS = 30000;     // 30s timeout for page.render()
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 function isInputFocused() { const t = document.activeElement?.tagName; return t === 'INPUT' || t === 'SELECT' || t === 'TEXTAREA'; }
@@ -220,7 +226,8 @@ const HARDCODED_DEFAULTS = {
   offsetRange: 500, transformScope: 'page',
   thumbPPI: 18,
   memLimitMB: 4096,
-  scaleOld: 100, scaleNew: 100
+  scaleOld: 100, scaleNew: 100,
+  sharpness: 0
 };
 
 function getDefaults() {
@@ -257,6 +264,8 @@ function applyDefaults(d) {
   DOM.sliderScaleNew.value = Math.max(25, Math.min(200, d.scaleNew || 100));
   DOM.jpegQuality.value = d.jpegQuality || 85;
   updateJpegQuality();
+  DOM.sliderSharpness.value = d.sharpness || 0;
+  DOM.valSharpness.textContent = (d.sharpness || 0) + '%';
   syncColors();
 }
 
@@ -271,7 +280,8 @@ function gatherUISettings() {
     thumbPPI, memLimitMB: cacheMemLimitMB,
     scaleOld: parseFloat(DOM.inputScaleOld.value) || 100,
     scaleNew: parseFloat(DOM.inputScaleNew.value) || 100,
-    jpegQuality: parseInt(DOM.jpegQuality.value) || 85
+    jpegQuality: parseInt(DOM.jpegQuality.value) || 85,
+    sharpness: parseInt(DOM.sliderSharpness.value) || 0
   };
 }
 
@@ -457,41 +467,52 @@ function getRenderScale() {
   return ppi / 72;
 }
 
+function validateCanvasSize(w, h) {
+  if (w > MAX_CANVAS_DIM || h > MAX_CANVAS_DIM)
+    return `Canvas dimension ${Math.round(Math.max(w, h))}px exceeds browser limit of ${MAX_CANVAS_DIM}px.`;
+  if (w * h > MAX_CANVAS_PIXELS)
+    return `Canvas size ${Math.round(w)}×${Math.round(h)} (${Math.round(w*h/1e6)}M pixels) exceeds safe limit.`;
+  return null;
+}
+
 // ═══════════════════════════════════════
 //  COMPARE
 // ═══════════════════════════════════════
 async function runCompare() {
   if (processing) return;
   processing = true;
-  cacheAbort = true; await sleep(50); cacheAbort = false;
-  DOM.btnCompare.textContent = 'Rendering page 1…';
-  DOM.placeholder.style.display = 'none';
-  DOM.canvasContainer.style.display = 'block';
-  DOM.zoomBar.classList.add('show');
-  DOM.bottomBar.classList.add('show');
-  // Set correct layout for current mode
-  if (mode === 'sidebyside') {
-    DOM.canvasPad.style.display = 'none';
-    DOM.sbsWrapper.style.display = 'flex';
-  } else {
-    DOM.canvasPad.style.display = '';
-    DOM.sbsWrapper.style.display = 'none';
+  try {
+    cacheAbort = true; await sleep(50); cacheAbort = false;
+    DOM.btnCompare.textContent = 'Rendering page 1…';
+    DOM.placeholder.style.display = 'none';
+    DOM.canvasContainer.style.display = 'block';
+    DOM.zoomBar.classList.add('show');
+    DOM.bottomBar.classList.add('show');
+    // Set correct layout for current mode
+    if (mode === 'sidebyside') {
+      DOM.canvasPad.style.display = 'none';
+      DOM.sbsWrapper.style.display = 'flex';
+    } else {
+      DOM.canvasPad.style.display = '';
+      DOM.sbsWrapper.style.display = 'none';
+    }
+    maxPages = Math.max(pdfOld.numPages, pdfNew.numPages);
+    currentPage = 1;
+    const ppi = parseInt(DOM.ppiSelect.value);
+    if (cachePPI !== ppi) { cacheOld = {}; cacheNew = {}; lruOrder = []; lruSet = new Set(); _trackedCacheBytes = 0; }
+    cachePPI = ppi;
+    invalidateRecolor();
+    hasRenderedOnce = false;
+    await renderPage(1);
+    updatePageNav(); updateCacheUI();
+    DOM.cacheTo.value = maxPages;
+    DOM.cacheFrom.max = maxPages;
+    DOM.cacheTo.max = maxPages;
+    rebuildThumbsNow();
+  } finally {
+    DOM.btnCompare.textContent = 'Compare Revisions';
+    processing = false;
   }
-  maxPages = Math.max(pdfOld.numPages, pdfNew.numPages);
-  currentPage = 1;
-  const ppi = parseInt(DOM.ppiSelect.value);
-  if (cachePPI !== ppi) { cacheOld = {}; cacheNew = {}; lruOrder = []; lruSet = new Set(); _trackedCacheBytes = 0; }
-  cachePPI = ppi;
-  invalidateRecolor();
-  hasRenderedOnce = false;
-  await renderPage(1);
-  updatePageNav(); updateCacheUI();
-  DOM.cacheTo.value = maxPages;
-  DOM.cacheFrom.max = maxPages;
-  DOM.cacheTo.max = maxPages;
-  DOM.btnCompare.textContent = 'Compare Revisions';
-  processing = false;
-  rebuildThumbsNow();
 }
 
 // ═══════════════════════════════════════
@@ -610,6 +631,8 @@ async function renderPage(num) {
   if (!rawOld && !rawNew) return;
   touchLRU(num);
   invalidateRecolor();
+  // Yield to let UI update (e.g. "Re-rendering…" text) before heavy recolor
+  await sleep(0);
   _doRecolorAndComposite();
   if (!hasRenderedOnce) { hasRenderedOnce = true; requestAnimationFrame(() => zoomFit()); }
 }
@@ -618,13 +641,40 @@ async function renderPdfPage(pdf, num) {
   if (!pdf || num > pdf.numPages) return null;
   const page = await pdf.getPage(num);
   const vp = page.getViewport({ scale: getRenderScale() });
+
+  const sizeErr = validateCanvasSize(vp.width, vp.height);
+  if (sizeErr) {
+    alert(`Page ${num} is too large to render at ${DOM.ppiSelect.value} PPI.\n\n${sizeErr}\nTry a lower PPI setting.`);
+    return null;
+  }
+
   const c = document.createElement('canvas');
   c.width = vp.width; c.height = vp.height;
-  // FIX: willReadFrequently hint — tells browser we'll call getImageData
   const ctx = c.getContext('2d', { willReadFrequently: true });
-  ctx.fillStyle = '#fff'; ctx.fillRect(0,0,vp.width,vp.height);
-  await page.render({ canvasContext: ctx, viewport: vp }).promise;
-  const imgData = ctx.getImageData(0,0,vp.width,vp.height);
+  if (!ctx) {
+    alert(`Page ${num}: browser refused canvas context at ${Math.round(vp.width)}×${Math.round(vp.height)}.\nTry a lower PPI setting.`);
+    c.width = 0; c.height = 0;
+    return null;
+  }
+
+  ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, vp.width, vp.height);
+
+  const renderPromise = page.render({ canvasContext: ctx, viewport: vp }).promise;
+  const timeoutPromise = new Promise((_, reject) =>
+    setTimeout(() => reject(new Error('timeout')), RENDER_TIMEOUT_MS)
+  );
+  try {
+    await Promise.race([renderPromise, timeoutPromise]);
+  } catch (e) {
+    const reason = e.message === 'timeout'
+      ? `Rendering page ${num} timed out after ${RENDER_TIMEOUT_MS / 1000}s.`
+      : `Rendering page ${num} failed: ${e.message}`;
+    alert(`${reason}\nTry a lower PPI setting.`);
+    c.width = 0; c.height = 0;
+    return null;
+  }
+
+  const imgData = ctx.getImageData(0, 0, vp.width, vp.height);
   c.width = 0; c.height = 0;
   return imgData;
 }
@@ -638,31 +688,65 @@ function invalidateRecolor() {
 }
 
 function recolor(src, rgb) {
-  const out = new ImageData(new Uint8ClampedArray(src.data), src.width, src.height);
-  const d = out.data;
+  const srcData = src.data;
+  const len = srcData.length;
+  const out = new ImageData(src.width, src.height);
   const tR = rgb[0], tG = rgb[1], tB = rgb[2];
-  const len = d.length;
-  // FIX: tighter loop — bitwise truncation, cached invDk
-  for (let i = 0; i < len; i += 4) {
-    const dk = 1 - (0.299*d[i] + 0.587*d[i+1] + 0.114*d[i+2]) / 255;
+  const sharpness = parseInt(DOM.sliderSharpness.value) || 0;
+
+  // Precompute LUT: luminance (0-255) → packed RGBA as uint32
+  // Sharpness applies a power curve to boost contrast on text/lines:
+  //   gamma < 1 pushes mid-darkness toward full opacity → crisper edges
+  const gamma = sharpness > 0 ? 1 / (1 + sharpness / 100 * 9) : 1; // 1.0 → 0.1
+  const lut = new Uint32Array(256);
+  for (let lum = 0; lum < 256; lum++) {
+    let dk = 1 - lum / 255;
     if (dk < 0.03) {
-      d[i] = 255; d[i+1] = 255; d[i+2] = 255; d[i+3] = 0;
+      lut[lum] = _isLittleEndian ? 0x00FFFFFF : 0xFFFFFF00;
     } else {
+      if (gamma < 1) dk = Math.pow(dk, gamma);
       const invDk = 1 - dk;
-      d[i]   = (tR*dk + 255*invDk + 0.5) | 0;
-      d[i+1] = (tG*dk + 255*invDk + 0.5) | 0;
-      d[i+2] = (tB*dk + 255*invDk + 0.5) | 0;
-      d[i+3] = (dk*255 + 0.5) | 0;
+      const r = (tR*dk + 255*invDk + 0.5) | 0;
+      const g = (tG*dk + 255*invDk + 0.5) | 0;
+      const b = (tB*dk + 255*invDk + 0.5) | 0;
+      const a = (dk*255 + 0.5) | 0;
+      lut[lum] = _isLittleEndian ? (a << 24 | b << 16 | g << 8 | r)
+                                 : (r << 24 | g << 16 | b << 8 | a);
     }
+  }
+
+  // Process pixels: integer luminance + LUT lookup + uint32 write
+  const out32 = new Uint32Array(out.data.buffer);
+  for (let i = 0, j = 0; i < len; i += 4, j++) {
+    // Integer luminance: 77/256≈0.301, 150/256≈0.586, 29/256≈0.113
+    out32[j] = lut[(77*srcData[i] + 150*srcData[i+1] + 29*srcData[i+2]) >> 8];
   }
   return out;
 }
 
-// FIX: reuse temp canvases instead of creating new ones each frame
+// Resize canvas only when dimensions actually change — avoids GPU texture reallocation.
+// Setting canvas.width/height unconditionally deallocates + reallocates the backing store
+// every frame, which at 300 PPI means churning ~70MB of GPU memory per composite call.
+function _prepareCtx(canvas, w, h) {
+  if (canvas.width !== w || canvas.height !== h) {
+    canvas.width = w; canvas.height = h;
+  }
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return null;
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.globalAlpha = 1;
+  ctx.globalCompositeOperation = 'source-over';
+  return ctx;
+}
+
+// FIX: reuse temp canvases — skip putImageData when same ImageData is already on canvas
 function putImgToTempCanvas(img, tmpCanvas, tmpCtx) {
+  if (tmpCanvas._lastImg === img) return tmpCanvas;
   if (tmpCanvas.width !== img.width) tmpCanvas.width = img.width;
   if (tmpCanvas.height !== img.height) tmpCanvas.height = img.height;
+  if (!tmpCtx) return tmpCanvas;
   tmpCtx.putImageData(img, 0, 0);
+  tmpCanvas._lastImg = img;
   return tmpCanvas;
 }
 
@@ -737,8 +821,8 @@ function composite(w, h, imgO, imgN) {
       const shiftY = minY < 0 ? -minY : 0;
       const canvasW = Math.ceil(maxX - minX);
       const canvasH = Math.ceil(maxY - minY);
-      out.width = canvasW; out.height = canvasH;
-      const ctx = out.getContext('2d');
+      const ctx = _prepareCtx(out, canvasW, canvasH);
+      if (!ctx) return;
       ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, canvasW, canvasH);
 
       const drawOldLayer = () => {
@@ -766,8 +850,8 @@ function composite(w, h, imgO, imgN) {
     const canvasH = Math.max(hO + (oy < 0 ? absOy : 0), hN + (oy > 0 ? oy : 0), totalH);
     const oldDx = ox<0?absOx:0, oldDy = oy<0?absOy:0;
     const newDx = ox>0?ox:0, newDy = oy>0?oy:0;
-    out.width = canvasW; out.height = canvasH;
-    const ctx = out.getContext('2d');
+    const ctx = _prepareCtx(out, canvasW, canvasH);
+    if (!ctx) return;
     ctx.fillStyle = '#fff'; ctx.fillRect(0,0,canvasW,canvasH);
 
     const drawOldLayer = () => {
@@ -800,22 +884,20 @@ function composite(w, h, imgO, imgN) {
     const newDxSbs = ox > 0 ? ox : 0,    newDySbs = oy > 0 ? oy : 0;
     // Old pane
     if (imgO && visOld) {
-      cOld.width = wO + oldDxSbs; cOld.height = hO + oldDySbs;
-      const ctxO = cOld.getContext('2d');
+      const ctxO = _prepareCtx(cOld, wO + oldDxSbs, hO + oldDySbs);
       ctxO.fillStyle = '#fff'; ctxO.fillRect(0,0,cOld.width,cOld.height);
       ctxO.globalAlpha = aO;
       ctxO.drawImage(putImgToTempCanvas(imgO,_tmpCanvasA,_tmpCtxA),0,0,imgO.width,imgO.height,oldDxSbs,oldDySbs,wO,hO);
       ctxO.globalAlpha = 1;
-    } else { cOld.width = 1; cOld.height = 1; }
+    } else if (cOld.width !== 1 || cOld.height !== 1) { cOld.width = 1; cOld.height = 1; }
     // New pane
     if (imgN && visNew) {
-      cNew.width = wN + newDxSbs; cNew.height = hN + newDySbs;
-      const ctxN = cNew.getContext('2d');
+      const ctxN = _prepareCtx(cNew, wN + newDxSbs, hN + newDySbs);
       ctxN.fillStyle = '#fff'; ctxN.fillRect(0,0,cNew.width,cNew.height);
       ctxN.globalAlpha = aN;
       ctxN.drawImage(putImgToTempCanvas(imgN,_tmpCanvasB,_tmpCtxB),0,0,imgN.width,imgN.height,newDxSbs,newDySbs,wN,hN);
       ctxN.globalAlpha = 1;
-    } else { cNew.width = 1; cNew.height = 1; }
+    } else if (cNew.width !== 1 || cNew.height !== 1) { cNew.width = 1; cNew.height = 1; }
     // Update labels with colors
     DOM.sbsLabelOld.style.background = DOM.colorOld.value;
     DOM.sbsLabelNew.style.background = DOM.colorNew.value;
@@ -825,8 +907,8 @@ function composite(w, h, imgO, imgN) {
       renderDrawLayer('overlay');
     }
     // Also render to the main output canvas for export
-    out.width = Math.max(wO, wN); out.height = Math.max(hO, hN);
-    const ctx = out.getContext('2d');
+    const ctx = _prepareCtx(out, Math.max(wO, wN), Math.max(hO, hN));
+    if (!ctx) return;
     ctx.fillStyle = '#fff'; ctx.fillRect(0,0,out.width,out.height);
     if (imgO && visOld) { ctx.globalAlpha=aO; ctx.drawImage(cOld,0,0); }
     if (imgN && visNew) { ctx.globalAlpha=aN; ctx.drawImage(cNew,0,0); }
@@ -848,7 +930,6 @@ function applyZoom() {
 }
 function applySbsZoom() {
   if (mode !== 'sidebyside') return;
-  // Scale the SBS canvases via CSS width/height
   const cO = DOM.sbsCanvasOld, cN = DOM.sbsCanvasNew;
   cO.style.width = (cO.width*currentZoom)+'px'; cO.style.height = (cO.height*currentZoom)+'px';
   cN.style.width = (cN.width*currentZoom)+'px'; cN.style.height = (cN.height*currentZoom)+'px';
@@ -885,6 +966,11 @@ function updateOpacity() {
   DOM.valOpacityNew.textContent = DOM.sliderOpacityNew.value+'%';
   syncColors();
   _debouncedComposite();
+}
+function updateSharpness() {
+  DOM.valSharpness.textContent = DOM.sliderSharpness.value + '%';
+  invalidateRecolor();
+  if (rawOld || rawNew) recolorAndComposite();
 }
 // Scale: slider → input sync → apply
 function sliderScale() {
@@ -1027,9 +1113,13 @@ async function changePPI() {
   cachePPI = newPPI;
   DOM.btnCompare.textContent = 'Re-rendering…';
   hasRenderedOnce = false;
-  await renderPage(currentPage);
-  DOM.btnCompare.textContent = 'Compare Revisions';
-  updateCacheUI();
+  try {
+    await sleep(0); // yield so button text update paints
+    await renderPage(currentPage);
+  } finally {
+    DOM.btnCompare.textContent = 'Compare Revisions';
+    updateCacheUI();
+  }
 }
 
 // ═══════════════════════════════════════
@@ -1117,8 +1207,13 @@ function applyRotation() {
   if (rawOld || rawNew) recolorAndComposite();
 }
 function resetRotation() {
-  if (DOM.transformScope.value === 'all') pageRotations = {};
-  else delete pageRotations[String(currentPage)];
+  if (DOM.transformScope.value === 'all') {
+    pageRotations = {};
+    pageTransforms = {};
+  } else {
+    delete pageRotations[String(currentPage)];
+    clearPageTransform(currentPage);
+  }
   loadRotationUI();
   if (rawOld || rawNew) recolorAndComposite();
 }
@@ -1264,6 +1359,7 @@ async function loadPreset(e) {
   if (p.offsetRange) { DOM.offsetRange.value=p.offsetRange; updateSliderRange(); }
   if (p.transformScope) DOM.transformScope.value=p.transformScope;
   else if (p.offsetScope) DOM.transformScope.value=p.offsetScope;
+  if (p.sharpness!=null) { DOM.sliderSharpness.value=p.sharpness; DOM.valSharpness.textContent=p.sharpness+'%'; }
   if (p.thumbPPI) { thumbPPI=p.thumbPPI; DOM.thumbPPIInput.value=thumbPPI; }
   if (p.memLimitMB) { cacheMemLimitMB=p.memLimitMB; DOM.memLimit.value=cacheMemLimitMB; }
   // Legacy: scaleScope fallback handled above via transformScope || offsetScope
@@ -1395,11 +1491,12 @@ async function canvasToSmallestImage(canvas, jpegQuality) {
   return { data: jpegData, format: 'JPEG' };
 }
 
-const JSPDF_MAX_DIM = 14400;
 function pdfPageDims(w, h) {
-  const scale = Math.min(1, JSPDF_MAX_DIM / Math.max(w, h));
-  if (scale < 1) console.warn(`PDF page ${w}×${h}px exceeds jsPDF limit of ${JSPDF_MAX_DIM}. Scaling to ${Math.round(w*scale)}×${Math.round(h*scale)} in PDF (image quality preserved).`);
-  return { pw: w * scale, ph: h * scale, scale, clamped: scale < 1 };
+  // Convert canvas pixels back to 72-DPI PDF points.
+  // The image is rendered at getRenderScale() × 72 DPI, so dividing by that
+  // gives the true page size in points — always within jsPDF's 14400 limit.
+  const s = getRenderScale();
+  return { pw: w / s, ph: h / s, scale: 1 / s, clamped: false };
 }
 
 async function addCanvasImageToPdf(pdf, canvas, x, y, w, h) {
@@ -1412,7 +1509,7 @@ async function exportPDF() {
   const out=DOM.canvasOutput; if(!out.width) return alert('Nothing to export.');
   if (!await _ensureJsPDF()) return;
   const JsPDF = _getJsPDF();
-  const {pw, ph, clamped} = pdfPageDims(out.width, out.height);
+  const {pw, ph} = pdfPageDims(out.width, out.height);
   const o=pw>=ph?'landscape':'portrait';
   const pdf=new JsPDF({orientation:o,unit:'px',format:[pw,ph],compress:true});
   // Base overlay — auto-picks PNG or JPEG (whichever is smaller)
@@ -1425,23 +1522,20 @@ async function exportPDF() {
     pdf.addImage(pngData,'PNG',0,0,pw,ph,undefined,'FAST');
   }
   pdf.save(`overlay-page-${currentPage}.pdf`);
-  const info = `Export: ${img.format}, ${(img.data.byteLength/1048576).toFixed(1)} MB`;
-  if (clamped) console.warn(info + ` (PDF page scaled down to fit jsPDF ${JSPDF_MAX_DIM}px limit)`);
-  else console.log(info);
+  console.log(`Export: ${img.format}, ${(img.data.byteLength/1048576).toFixed(1)} MB`);
 }
 async function exportAllPDF() {
   if(!rawOld&&!rawNew) return alert('Nothing to export.');
   if (!_ensureJsPDF()) return;
   const JsPDF = _getJsPDF(), btn=$('btn-export-all'), origText=btn.textContent;
-  let pdf=null, totalBytes=0, anyClamped=false;
+  let pdf=null, totalBytes=0;
   const savedPage=currentPage;
   try {
     for(let p=1;p<=maxPages;p++) {
       btn.textContent=`${p}/${maxPages}…`; await sleep(30);
       currentPage=p; loadOffsetUI(); await renderPage(p);
       const c=DOM.canvasOutput;
-      const {pw, ph, clamped} = pdfPageDims(c.width, c.height);
-      if (clamped) anyClamped = true;
+      const {pw, ph} = pdfPageDims(c.width, c.height);
       const o=pw>=ph?'landscape':'portrait';
       if(p===1) pdf=new JsPDF({orientation:o,unit:'px',format:[pw,ph],compress:true});
       else pdf.addPage([pw,ph],o);
@@ -1457,9 +1551,7 @@ async function exportAllPDF() {
       }
     }
     pdf.save(`overlay-all-pages-${new Date().toISOString().slice(0,10)}.pdf`);
-    const info = `Export all: ${maxPages} pages, ~${(totalBytes/1048576).toFixed(1)} MB image data`;
-    if (anyClamped) console.warn(info + ` (some pages scaled down to fit jsPDF ${JSPDF_MAX_DIM}px limit)`);
-    else console.log(info);
+    console.log(`Export all: ${maxPages} pages, ~${(totalBytes/1048576).toFixed(1)} MB image data`);
   } finally {
     currentPage=savedPage; loadOffsetUI(); await renderPage(savedPage); updatePageNav();
     btn.textContent=origText;
@@ -2336,9 +2428,11 @@ function renderDrawLayer(side) {
     canvas.style.width = srcCanvas.style.width;
     canvas.style.height = srcCanvas.style.height;
   }
+  const strokes = drawStrokesFor();
+  const hasContent = strokes.length > 0 || _drawCurrent;
   const ctx = canvas.getContext('2d');
   ctx.clearRect(0, 0, canvas.width, canvas.height);
-  const strokes = drawStrokesFor();
+  if (!hasContent) return;
   strokes.forEach(s => drawStrokeToCtx(ctx, s));
   if (_drawCurrent) {
     drawStrokeToCtx(ctx, _drawCurrent);
