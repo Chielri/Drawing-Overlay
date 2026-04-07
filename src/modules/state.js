@@ -126,6 +126,9 @@ let alphaMain = 'new'; // which layer is on top in alpha mode: 'old' | 'new'
 
 // Crosshair state
 let xhairEnabled = true;
+let _xhairRAF = 0;
+let _xhairPending = null;
+let _isDragging = false; // set by drag-to-pan handlers to suppress crosshair
 
 const _tmpCanvasA = document.createElement('canvas');
 const _tmpCanvasB = document.createElement('canvas');
