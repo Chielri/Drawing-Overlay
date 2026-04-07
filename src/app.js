@@ -1207,8 +1207,13 @@ function applyRotation() {
   if (rawOld || rawNew) recolorAndComposite();
 }
 function resetRotation() {
-  if (DOM.transformScope.value === 'all') pageRotations = {};
-  else delete pageRotations[String(currentPage)];
+  if (DOM.transformScope.value === 'all') {
+    pageRotations = {};
+    pageTransforms = {};
+  } else {
+    delete pageRotations[String(currentPage)];
+    clearPageTransform(currentPage);
+  }
   loadRotationUI();
   if (rawOld || rawNew) recolorAndComposite();
 }
