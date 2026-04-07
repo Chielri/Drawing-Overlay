@@ -4,20 +4,17 @@ A browser-based tool for visually comparing two PDF document revisions. Each PDF
 
 ## Features
 
-- **Overlay mode** — both revisions drawn on one canvas with adjustable opacity and color
-- **Side-by-side mode** — revisions rendered next to each other
-- **Per-page offset & scale** — fine-tune alignment for each page independently
+- **Overlay & side-by-side modes** — compare revisions on one canvas or side by side
+- **Blend modes** — multiply or alpha overlay with configurable layer order
+- **Per-page alignment** — offset, scale, rotation, or automatic 3-point affine alignment
+- **Drawing annotations** — pen, line, arrow, highlighter, rectangle, text, eraser tools
+- **Crosshair overlay** — toggleable with configurable color and size
 - **Zoom & pan** — scroll-wheel zoom with drag-to-pan
 - **Thumbnail panel** — collapsible page overview with click-to-navigate
-- **Page cache** — LRU-based caching with configurable memory limit
-- **Render quality** — selectable PPI (72 draft → 300 print)
+- **Page cache** — LRU-based with configurable memory limit
 - **Export** — single-page PNG/PDF, all-pages PDF, or all-pages ZIP
-- **Presets** — save/load full comparison settings (including embedded PDFs) as JSON
-- **Keyboard shortcuts** — arrow keys, Page Up/Down, Home/End for navigation
-- **Drawing annotations** — pen, line, arrow, highlighter, rectangle, text, and eraser tools with per-page stroke storage
-- **3-point alignment** — pick 3 matching point pairs on old & new PDFs for automatic affine alignment
-- **Blend modes** — multiply or alpha overlay with configurable layer order
-- **Crosshair overlay** — toggleable crosshair with configurable color and size
+- **Presets** — save/load full comparison settings as JSON
+- **Keyboard shortcuts** — tool selection, page navigation, undo
 
 ## Usage
 
@@ -30,20 +27,21 @@ A browser-based tool for visually comparing two PDF document revisions. Each PDF
 
 No installation, server, or build step required — everything runs client-side.
 
+## Development
+
+The source lives in `src/`. The application JavaScript is organized into focused modules under `src/modules/`, each handling one concern (state, rendering, drawing, export, etc.). See [CLAUDE.md](CLAUDE.md) for the full module map and architecture details.
+
+```bash
+# Rebuild the single-file output after editing src/
+./build.sh
+```
+
 ## Requirements
 
 - A modern browser with HTML5 Canvas support
 - JavaScript enabled
 
-All libraries (PDF.js, jsPDF, JSZip) are inlined in the HTML file — no network requests needed.
-
-## How It Works
-
-1. PDFs are parsed client-side using PDF.js
-2. Each page is rendered to a canvas and the pixel data is extracted
-3. Dark pixels are recolored to the chosen tint (luminance-based algorithm)
-4. Both layers are composited onto a single output canvas with configurable opacity
-5. Results can be exported or cached for fast page switching
+All libraries (PDF.js, jsPDF, JSZip) are inlined — no network requests needed.
 
 ## Color Legend
 
@@ -52,12 +50,6 @@ All libraries (PDF.js, jsPDF, JSZip) are inlined in the HTML file — no network
 | Blue (old color) | Content only in the old revision (removed) |
 | Red (new color) | Content only in the new revision (added) |
 | Purple (overlap) | Unchanged content present in both |
-
-## Planned Features
-
-- **Dimension line markup** — draw dimension/leader lines with length labels
-- **Measure tool** — click two points to measure distance on the canvas
-- **Calibrate measure** — set a known real-world distance to convert pixel measurements into real units (mm, cm, m, ft, etc.)
 
 ## License
 
