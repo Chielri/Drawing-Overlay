@@ -83,8 +83,10 @@
     </div>
     <div class="control-group">
       <div class="section-title">Line Sharpness</div>
-      <div class="control-row"><span class="control-label">Threshold</span><span class="control-value" id="val-sharpness">0%</span></div>
-      <input type="range" id="slider-sharpness" min="0" max="100" value="0" oninput="updateSharpness()" />
+      <div class="control-row"><span class="control-label" id="label-sharpness-old">Old</span><span class="control-value" id="val-sharpness-old">0%</span></div>
+      <input type="range" id="slider-sharpness-old" min="0" max="100" value="0" oninput="updateSharpness()" />
+      <div class="control-row" style="margin-top:2px;"><span class="control-label" id="label-sharpness-new">New</span><span class="control-value" id="val-sharpness-new">0%</span></div>
+      <input type="range" id="slider-sharpness-new" min="0" max="100" value="0" oninput="updateSharpness()" />
       <div class="ppi-hint">Boost contrast on text &amp; lines. Higher = crisper edges, may amplify noise.</div>
     </div>
     <div class="control-group">
@@ -112,6 +114,34 @@
               <button class="offset-btn" onclick="matchScale()">Match to New</button>
             </div>
             <div class="offset-hint">Slider: 25–200%. Type for finer or wider range (10–500%).</div>
+          </div>
+        </div>
+      </div>
+      <!-- Crop sub-section -->
+      <div class="sub-section collapsed">
+        <div class="sub-section-header" onclick="toggleSubSection(this)">
+          <span class="sub-section-label">Crop</span><span class="sub-section-chevron">▾</span>
+        </div>
+        <div class="sub-section-body">
+          <div class="offset-wrap">
+            <div class="control-row"><span class="control-label" id="label-crop-old">Old revision</span></div>
+            <div class="crop-grid">
+              <div class="crop-row"><span class="crop-lbl">Top</span><input type="number" class="offset-input" id="crop-old-t" min="0" max="50" value="0" step="0.5" onchange="applyCropUI()" /><span class="offset-unit">%</span></div>
+              <div class="crop-row"><span class="crop-lbl">Right</span><input type="number" class="offset-input" id="crop-old-r" min="0" max="50" value="0" step="0.5" onchange="applyCropUI()" /><span class="offset-unit">%</span></div>
+              <div class="crop-row"><span class="crop-lbl">Bottom</span><input type="number" class="offset-input" id="crop-old-b" min="0" max="50" value="0" step="0.5" onchange="applyCropUI()" /><span class="offset-unit">%</span></div>
+              <div class="crop-row"><span class="crop-lbl">Left</span><input type="number" class="offset-input" id="crop-old-l" min="0" max="50" value="0" step="0.5" onchange="applyCropUI()" /><span class="offset-unit">%</span></div>
+            </div>
+            <div class="control-row" style="margin-top:6px;"><span class="control-label" id="label-crop-new">New revision</span></div>
+            <div class="crop-grid">
+              <div class="crop-row"><span class="crop-lbl">Top</span><input type="number" class="offset-input" id="crop-new-t" min="0" max="50" value="0" step="0.5" onchange="applyCropUI()" /><span class="offset-unit">%</span></div>
+              <div class="crop-row"><span class="crop-lbl">Right</span><input type="number" class="offset-input" id="crop-new-r" min="0" max="50" value="0" step="0.5" onchange="applyCropUI()" /><span class="offset-unit">%</span></div>
+              <div class="crop-row"><span class="crop-lbl">Bottom</span><input type="number" class="offset-input" id="crop-new-b" min="0" max="50" value="0" step="0.5" onchange="applyCropUI()" /><span class="offset-unit">%</span></div>
+              <div class="crop-row"><span class="crop-lbl">Left</span><input type="number" class="offset-input" id="crop-new-l" min="0" max="50" value="0" step="0.5" onchange="applyCropUI()" /><span class="offset-unit">%</span></div>
+            </div>
+            <div class="offset-btn-row" style="margin-top:4px;">
+              <button class="offset-btn" onclick="resetCrop()">Reset</button>
+            </div>
+            <div class="offset-hint">Crop percentage from each edge. Does not affect alignment.</div>
           </div>
         </div>
       </div>

@@ -16,7 +16,12 @@ const DOM = {
   labelScaleOld: $('label-scale-old'), labelScaleNew: $('label-scale-new'),
   sliderOpacityOld: $('slider-opacity-old'), sliderOpacityNew: $('slider-opacity-new'),
   valOpacityOld: $('val-opacity-old'), valOpacityNew: $('val-opacity-new'),
-  sliderSharpness: $('slider-sharpness'), valSharpness: $('val-sharpness'),
+  labelSharpnessOld: $('label-sharpness-old'), labelSharpnessNew: $('label-sharpness-new'),
+  sliderSharpnessOld: $('slider-sharpness-old'), valSharpnessOld: $('val-sharpness-old'),
+  sliderSharpnessNew: $('slider-sharpness-new'), valSharpnessNew: $('val-sharpness-new'),
+  cropOldT: $('crop-old-t'), cropOldR: $('crop-old-r'), cropOldB: $('crop-old-b'), cropOldL: $('crop-old-l'),
+  cropNewT: $('crop-new-t'), cropNewR: $('crop-new-r'), cropNewB: $('crop-new-b'), cropNewL: $('crop-new-l'),
+  labelCropOld: $('label-crop-old'), labelCropNew: $('label-crop-new'),
   sliderScaleOld: $('slider-scale-old'), sliderScaleNew: $('slider-scale-new'),
   inputScaleOld: $('input-scale-old'), inputScaleNew: $('input-scale-new'),
   transformScope: $('transform-scope'),
@@ -77,6 +82,7 @@ let pdfOld = null, pdfNew = null;
 let rawOld = null, rawNew = null;
 let recoloredOld = null, recoloredNew = null;
 let lastColorOld = '', lastColorNew = '';
+let lastSharpOld = -1, lastSharpNew = -1;
 let currentPage = 1, maxPages = 1, currentZoom = 1;
 let mode = 'overlay', visOld = true, visNew = true, processing = false;
 let pdfBufOld = null, pdfBufNew = null;
@@ -92,6 +98,7 @@ let pageRotations = {};        // { "1": 5.0, "2": 0, ... }
 
 // 3-point alignment state
 let pageTransforms = {};       // { "1": {a,b,c,d,e,f}, ... } — affine matrix per page
+let pageCrops = {};            // { "1": {old:{t,r,b,l}, new:{t,r,b,l}} } — crop % per edge
 let align3Active = false;      // picking mode on/off
 let align3Phase = 'old';       // 'old' or 'new' — which PDF we're picking points for
 let align3PointsOld = [];      // [{x,y}, ...] up to 3
@@ -227,7 +234,7 @@ const HARDCODED_DEFAULTS = {
   thumbPPI: 18,
   memLimitMB: 4096,
   scaleOld: 100, scaleNew: 100,
-  sharpness: 0
+  sharpnessOld: 0, sharpnessNew: 0
 };
 
 function getDefaults() {
@@ -264,8 +271,12 @@ function applyDefaults(d) {
   DOM.sliderScaleNew.value = Math.max(25, Math.min(200, d.scaleNew || 100));
   DOM.jpegQuality.value = d.jpegQuality || 85;
   updateJpegQuality();
-  DOM.sliderSharpness.value = d.sharpness || 0;
-  DOM.valSharpness.textContent = (d.sharpness || 0) + '%';
+  const _sO = d.sharpnessOld ?? d.sharpness ?? 0;
+  const _sN = d.sharpnessNew ?? d.sharpness ?? 0;
+  DOM.sliderSharpnessOld.value = _sO;
+  DOM.valSharpnessOld.textContent = _sO + '%';
+  DOM.sliderSharpnessNew.value = _sN;
+  DOM.valSharpnessNew.textContent = _sN + '%';
   syncColors();
 }
 
@@ -281,7 +292,8 @@ function gatherUISettings() {
     scaleOld: parseFloat(DOM.inputScaleOld.value) || 100,
     scaleNew: parseFloat(DOM.inputScaleNew.value) || 100,
     jpegQuality: parseInt(DOM.jpegQuality.value) || 85,
-    sharpness: parseInt(DOM.sliderSharpness.value) || 0
+    sharpnessOld: parseInt(DOM.sliderSharpnessOld.value) || 0,
+    sharpnessNew: parseInt(DOM.sliderSharpnessNew.value) || 0
   };
 }
 
@@ -298,7 +310,7 @@ function resetToDefaults() {
   if (!confirm('Reset all settings to factory defaults? This also clears your saved defaults.')) return;
   cacheAbort = true;
   try { localStorage.removeItem(INIT_KEY); } catch(e) {}
-  pageOffsets = {};
+  pageOffsets = {}; pageCrops = {};
   cacheOld = {}; cacheNew = {};
   _trackedCacheBytes = 0;
   cachePPI = 0;
@@ -364,6 +376,8 @@ function syncColors() {
   DOM.iconOld.style.color = cOld; DOM.iconNew.style.color = cNew;
   DOM.labelColorOld.style.color = cOld; DOM.labelColorNew.style.color = cNew;
   DOM.labelOpacityOld.style.color = cOld; DOM.labelOpacityNew.style.color = cNew;
+  DOM.labelSharpnessOld.style.color = cOld; DOM.labelSharpnessNew.style.color = cNew;
+  DOM.labelCropOld.style.color = cOld; DOM.labelCropNew.style.color = cNew;
   DOM.labelScaleOld.style.color = cOld; DOM.labelScaleNew.style.color = cNew;
 }
 
@@ -685,14 +699,14 @@ async function renderPdfPage(pdf, num) {
 function invalidateRecolor() {
   recoloredOld = null; recoloredNew = null;
   lastColorOld = ''; lastColorNew = '';
+  lastSharpOld = -1; lastSharpNew = -1;
 }
 
-function recolor(src, rgb) {
+function recolor(src, rgb, sharpness) {
   const srcData = src.data;
   const len = srcData.length;
   const out = new ImageData(src.width, src.height);
   const tR = rgb[0], tG = rgb[1], tB = rgb[2];
-  const sharpness = parseInt(DOM.sliderSharpness.value) || 0;
 
   // Precompute LUT: luminance (0-255) → packed RGBA as uint32
   // Sharpness applies a power curve to boost contrast on text/lines:
@@ -754,14 +768,16 @@ function putImgToTempCanvas(img, tmpCanvas, tmpCtx) {
 function _doRecolorAndComposite() {
   const cOldHex = DOM.colorOld.value;
   const cNewHex = DOM.colorNew.value;
-  // Only recolor if color actually changed or data is new
-  if (!recoloredOld || lastColorOld !== cOldHex) {
-    recoloredOld = rawOld ? recolor(rawOld, hexToRgb(cOldHex)) : null;
-    lastColorOld = cOldHex;
+  const sharpOld = parseInt(DOM.sliderSharpnessOld.value) || 0;
+  const sharpNew = parseInt(DOM.sliderSharpnessNew.value) || 0;
+  // Only recolor if color or sharpness actually changed or data is new
+  if (!recoloredOld || lastColorOld !== cOldHex || lastSharpOld !== sharpOld) {
+    recoloredOld = rawOld ? recolor(rawOld, hexToRgb(cOldHex), sharpOld) : null;
+    lastColorOld = cOldHex; lastSharpOld = sharpOld;
   }
-  if (!recoloredNew || lastColorNew !== cNewHex) {
-    recoloredNew = rawNew ? recolor(rawNew, hexToRgb(cNewHex)) : null;
-    lastColorNew = cNewHex;
+  if (!recoloredNew || lastColorNew !== cNewHex || lastSharpNew !== sharpNew) {
+    recoloredNew = rawNew ? recolor(rawNew, hexToRgb(cNewHex), sharpNew) : null;
+    lastColorNew = cNewHex; lastSharpNew = sharpNew;
   }
   const w = Math.max(recoloredOld?recoloredOld.width:0, recoloredNew?recoloredNew.width:0);
   const h = Math.max(recoloredOld?recoloredOld.height:0, recoloredNew?recoloredNew.height:0);
@@ -792,9 +808,14 @@ function composite(w, h, imgO, imgN) {
   const ox = off.x, oy = off.y;
   const absOx = Math.abs(ox), absOy = Math.abs(oy);
 
-  // Scaled dimensions for each layer
-  const wO = imgO ? imgO.width * sO : 0, hO = imgO ? imgO.height * sO : 0;
-  const wN = imgN ? imgN.width * sN : 0, hN = imgN ? imgN.height * sN : 0;
+  // Crop: compute source rects (pixels) from percentage crop per edge
+  const crops = getPageCrop(currentPage);
+  const cO = imgO ? cropToSourceRect(imgO.width, imgO.height, crops.old) : { sx:0, sy:0, sw:0, sh:0 };
+  const cN = imgN ? cropToSourceRect(imgN.width, imgN.height, crops.new) : { sx:0, sy:0, sw:0, sh:0 };
+
+  // Scaled dimensions for each layer (using cropped source size)
+  const wO = imgO ? cO.sw * sO : 0, hO = imgO ? cO.sh * sO : 0;
+  const wN = imgN ? cN.sw * sN : 0, hN = imgN ? cN.sh * sN : 0;
 
   const xform = getPageTransform(currentPage);
 
@@ -808,7 +829,8 @@ function composite(w, h, imgO, imgN) {
       // Affine transform mode: old stays fixed, new is transformed
       // The stored affine already has sN baked into its linear components (a,b,c,d),
       // so we apply it directly without multiplying by sN again.
-      const corners = [[0,0],[imgN.width,0],[0,imgN.height],[imgN.width,imgN.height]];
+      // Use cropped corners for bounding box — draw only cropped region at its original coords
+      const corners = [[cN.sx,cN.sy],[cN.sx+cN.sw,cN.sy],[cN.sx,cN.sy+cN.sh],[cN.sx+cN.sw,cN.sy+cN.sh]];
       let minX=0, minY=0, maxX=wO, maxY=hO;
       corners.forEach(([px,py]) => {
         const cx = xform.a*px + xform.b*py + xform.e;
@@ -826,13 +848,14 @@ function composite(w, h, imgO, imgN) {
       ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, canvasW, canvasH);
 
       const drawOldLayer = () => {
-        if (imgO && visOld) { ctx.globalAlpha = aO; ctx.drawImage(putImgToTempCanvas(imgO, _tmpCanvasA, _tmpCtxA), 0, 0, imgO.width, imgO.height, shiftX, shiftY, wO, hO); }
+        if (imgO && visOld) { ctx.globalAlpha = aO; ctx.drawImage(putImgToTempCanvas(imgO, _tmpCanvasA, _tmpCtxA), cO.sx, cO.sy, cO.sw, cO.sh, shiftX, shiftY, wO, hO); }
       };
       const drawNewLayer = () => {
         if (imgN && visNew) {
           ctx.globalAlpha = aN; ctx.save();
           ctx.setTransform(xform.a, xform.c, xform.b, xform.d, xform.e + shiftX, xform.f + shiftY);
-          ctx.drawImage(putImgToTempCanvas(imgN, _tmpCanvasB, _tmpCtxB), 0, 0);
+          // Draw cropped region at its original source coords so the affine maps correctly
+          ctx.drawImage(putImgToTempCanvas(imgN, _tmpCanvasB, _tmpCtxB), cN.sx, cN.sy, cN.sw, cN.sh, cN.sx, cN.sy, cN.sw, cN.sh);
           ctx.restore();
         }
       };
@@ -855,7 +878,7 @@ function composite(w, h, imgO, imgN) {
     ctx.fillStyle = '#fff'; ctx.fillRect(0,0,canvasW,canvasH);
 
     const drawOldLayer = () => {
-      if (imgO && visOld) { ctx.globalAlpha=aO; ctx.drawImage(putImgToTempCanvas(imgO,_tmpCanvasA,_tmpCtxA),0,0,imgO.width,imgO.height,oldDx,oldDy,wO,hO); }
+      if (imgO && visOld) { ctx.globalAlpha=aO; ctx.drawImage(putImgToTempCanvas(imgO,_tmpCanvasA,_tmpCtxA),cO.sx,cO.sy,cO.sw,cO.sh,oldDx,oldDy,wO,hO); }
     };
     const drawNewLayer = () => {
       if (imgN && visNew) {
@@ -863,10 +886,10 @@ function composite(w, h, imgO, imgN) {
         if (Math.abs(rotDeg) > 0.001) {
           const cx = newDx + wN / 2, cy = newDy + hN / 2;
           ctx.save(); ctx.translate(cx, cy); ctx.rotate(rotRad);
-          ctx.drawImage(putImgToTempCanvas(imgN,_tmpCanvasB,_tmpCtxB),0,0,imgN.width,imgN.height,-wN/2,-hN/2,wN,hN);
+          ctx.drawImage(putImgToTempCanvas(imgN,_tmpCanvasB,_tmpCtxB),cN.sx,cN.sy,cN.sw,cN.sh,-wN/2,-hN/2,wN,hN);
           ctx.restore();
         } else {
-          ctx.drawImage(putImgToTempCanvas(imgN,_tmpCanvasB,_tmpCtxB),0,0,imgN.width,imgN.height,newDx,newDy,wN,hN);
+          ctx.drawImage(putImgToTempCanvas(imgN,_tmpCanvasB,_tmpCtxB),cN.sx,cN.sy,cN.sw,cN.sh,newDx,newDy,wN,hN);
         }
       }
     };
@@ -887,7 +910,7 @@ function composite(w, h, imgO, imgN) {
       const ctxO = _prepareCtx(cOld, wO + oldDxSbs, hO + oldDySbs);
       ctxO.fillStyle = '#fff'; ctxO.fillRect(0,0,cOld.width,cOld.height);
       ctxO.globalAlpha = aO;
-      ctxO.drawImage(putImgToTempCanvas(imgO,_tmpCanvasA,_tmpCtxA),0,0,imgO.width,imgO.height,oldDxSbs,oldDySbs,wO,hO);
+      ctxO.drawImage(putImgToTempCanvas(imgO,_tmpCanvasA,_tmpCtxA),cO.sx,cO.sy,cO.sw,cO.sh,oldDxSbs,oldDySbs,wO,hO);
       ctxO.globalAlpha = 1;
     } else if (cOld.width !== 1 || cOld.height !== 1) { cOld.width = 1; cOld.height = 1; }
     // New pane
@@ -895,7 +918,7 @@ function composite(w, h, imgO, imgN) {
       const ctxN = _prepareCtx(cNew, wN + newDxSbs, hN + newDySbs);
       ctxN.fillStyle = '#fff'; ctxN.fillRect(0,0,cNew.width,cNew.height);
       ctxN.globalAlpha = aN;
-      ctxN.drawImage(putImgToTempCanvas(imgN,_tmpCanvasB,_tmpCtxB),0,0,imgN.width,imgN.height,newDxSbs,newDySbs,wN,hN);
+      ctxN.drawImage(putImgToTempCanvas(imgN,_tmpCanvasB,_tmpCtxB),cN.sx,cN.sy,cN.sw,cN.sh,newDxSbs,newDySbs,wN,hN);
       ctxN.globalAlpha = 1;
     } else if (cNew.width !== 1 || cNew.height !== 1) { cNew.width = 1; cNew.height = 1; }
     // Update labels with colors
@@ -967,10 +990,13 @@ function updateOpacity() {
   syncColors();
   _debouncedComposite();
 }
-function updateSharpness() {
-  DOM.valSharpness.textContent = DOM.sliderSharpness.value + '%';
-  invalidateRecolor();
+const _debouncedSharpness = debounce(() => {
   if (rawOld || rawNew) recolorAndComposite();
+}, 150);
+function updateSharpness() {
+  DOM.valSharpnessOld.textContent = DOM.sliderSharpnessOld.value + '%';
+  DOM.valSharpnessNew.textContent = DOM.sliderSharpnessNew.value + '%';
+  _debouncedSharpness();
 }
 // Scale: slider → input sync → apply
 function sliderScale() {
@@ -1147,10 +1173,10 @@ function toggleCacheSection(titleEl) {
 // -- Reset all transforms for scope --
 function resetAllTransforms() {
   const all = DOM.transformScope.value === 'all';
-  if (all) { pageScales = {}; pageOffsets = {}; pageRotations = {}; pageTransforms = {}; }
+  if (all) { pageScales = {}; pageOffsets = {}; pageRotations = {}; pageTransforms = {}; pageCrops = {}; }
   else {
     const p = String(currentPage);
-    delete pageScales[p]; delete pageOffsets[p]; delete pageRotations[p]; delete pageTransforms[p];
+    delete pageScales[p]; delete pageOffsets[p]; delete pageRotations[p]; delete pageTransforms[p]; delete pageCrops[p];
   }
   loadTransformUI();
   if (rawOld || rawNew) recolorAndComposite();
@@ -1230,10 +1256,44 @@ function loadTransformUI() {
   syncSliders();
   loadScaleUI();
   loadRotationUI();
+  loadCropUI();
   if (typeof updateAlign3UI === 'function') updateAlign3UI();
 }
 // Legacy alias — many call sites use loadOffsetUI
 function loadOffsetUI() { loadTransformUI(); }
+
+// ── Crop UI ──
+function loadCropUI() {
+  const c = getPageCrop(currentPage);
+  DOM.cropOldT.value = c.old.t; DOM.cropOldR.value = c.old.r;
+  DOM.cropOldB.value = c.old.b; DOM.cropOldL.value = c.old.l;
+  DOM.cropNewT.value = c.new.t; DOM.cropNewR.value = c.new.r;
+  DOM.cropNewB.value = c.new.b; DOM.cropNewL.value = c.new.l;
+}
+function _readCropInputs() {
+  const clamp = v => Math.max(0, Math.min(50, parseFloat(v) || 0));
+  return {
+    old: { t: clamp(DOM.cropOldT.value), r: clamp(DOM.cropOldR.value), b: clamp(DOM.cropOldB.value), l: clamp(DOM.cropOldL.value) },
+    new: { t: clamp(DOM.cropNewT.value), r: clamp(DOM.cropNewR.value), b: clamp(DOM.cropNewB.value), l: clamp(DOM.cropNewL.value) }
+  };
+}
+function applyCropUI() {
+  const vals = _readCropInputs();
+  const pages = DOM.transformScope.value === 'all'
+    ? Array.from({ length: maxPages }, (_, i) => i + 1) : [currentPage];
+  for (const p of pages) {
+    setPageCrop(p, 'old', vals.old);
+    setPageCrop(p, 'new', vals.new);
+  }
+  if (rawOld || rawNew) recolorAndComposite();
+}
+function resetCrop() {
+  const pages = DOM.transformScope.value === 'all'
+    ? Array.from({ length: maxPages }, (_, i) => i + 1) : [currentPage];
+  for (const p of pages) delete pageCrops[String(p)];
+  loadCropUI();
+  if (rawOld || rawNew) recolorAndComposite();
+}
 function syncSliders() {
   const x=parseFloat(DOM.offsetX.value)||0, y=parseFloat(DOM.offsetY.value)||0;
   DOM.offsetXSlider.value = Math.max(parseInt(DOM.offsetXSlider.min),Math.min(parseInt(DOM.offsetXSlider.max),x));
@@ -1331,7 +1391,7 @@ async function savePreset() {
   const btn = document.querySelector('.save-btn.primary');
   btn.textContent = '⏳ Saving…'; btn.style.pointerEvents = 'none';
   await sleep(50);
-  const preset = { version:2, ...gatherUISettings(), pageOffsets: JSON.parse(JSON.stringify(pageOffsets)), pageScales: JSON.parse(JSON.stringify(pageScales)), pageRotations: JSON.parse(JSON.stringify(pageRotations)), pageTransforms: JSON.parse(JSON.stringify(pageTransforms)), maxPages, currentPage,
+  const preset = { version:2, ...gatherUISettings(), pageOffsets: JSON.parse(JSON.stringify(pageOffsets)), pageScales: JSON.parse(JSON.stringify(pageScales)), pageRotations: JSON.parse(JSON.stringify(pageRotations)), pageTransforms: JSON.parse(JSON.stringify(pageTransforms)), pageCrops: JSON.parse(JSON.stringify(pageCrops)), maxPages, currentPage,
     fileOld: DOM.nameOld.textContent||'', fileNew: DOM.nameNew.textContent||'', savedAt: new Date().toISOString() };
   if (pdfBufOld) preset.pdfOldB64 = bufToBase64(pdfBufOld);
   if (pdfBufNew) preset.pdfNewB64 = bufToBase64(pdfBufNew);
@@ -1359,7 +1419,8 @@ async function loadPreset(e) {
   if (p.offsetRange) { DOM.offsetRange.value=p.offsetRange; updateSliderRange(); }
   if (p.transformScope) DOM.transformScope.value=p.transformScope;
   else if (p.offsetScope) DOM.transformScope.value=p.offsetScope;
-  if (p.sharpness!=null) { DOM.sliderSharpness.value=p.sharpness; DOM.valSharpness.textContent=p.sharpness+'%'; }
+  { const sO = p.sharpnessOld ?? p.sharpness ?? null; if (sO!=null) { DOM.sliderSharpnessOld.value=sO; DOM.valSharpnessOld.textContent=sO+'%'; } }
+  { const sN = p.sharpnessNew ?? p.sharpness ?? null; if (sN!=null) { DOM.sliderSharpnessNew.value=sN; DOM.valSharpnessNew.textContent=sN+'%'; } }
   if (p.thumbPPI) { thumbPPI=p.thumbPPI; DOM.thumbPPIInput.value=thumbPPI; }
   if (p.memLimitMB) { cacheMemLimitMB=p.memLimitMB; DOM.memLimit.value=cacheMemLimitMB; }
   // Legacy: scaleScope fallback handled above via transformScope || offsetScope
@@ -1387,6 +1448,7 @@ async function loadPreset(e) {
   }
   if (p.pageRotations) pageRotations=JSON.parse(JSON.stringify(p.pageRotations));
   if (p.pageOffsets) pageOffsets=JSON.parse(JSON.stringify(p.pageOffsets));
+  if (p.pageCrops) pageCrops=JSON.parse(JSON.stringify(p.pageCrops));
   if (p.pdfOldB64 && p.pdfNewB64) {
     DOM.btnCompare.textContent='Parsing old PDF…'; await sleep(30);
     pdfBufOld=base64ToBuf(p.pdfOldB64); pdfOld=await pdfjsLib.getDocument({data:pdfBufOld.slice(0)}).promise;
@@ -1884,6 +1946,27 @@ function setPageTransform(page, t) {
 }
 function clearPageTransform(page) { delete pageTransforms[String(page)]; }
 
+// ── Crop accessors ──
+const _zeroCrop = { t: 0, r: 0, b: 0, l: 0 };
+function getPageCrop(page) {
+  const c = pageCrops[String(page)];
+  return c ? { old: { ..._zeroCrop, ...c.old }, new: { ..._zeroCrop, ...c.new } }
+           : { old: { ..._zeroCrop }, new: { ..._zeroCrop } };
+}
+function setPageCrop(page, side, crop) {
+  const key = String(page);
+  if (!pageCrops[key]) pageCrops[key] = { old: { ..._zeroCrop }, new: { ..._zeroCrop } };
+  pageCrops[key][side] = { t: crop.t || 0, r: crop.r || 0, b: crop.b || 0, l: crop.l || 0 };
+}
+// Convert crop percentages to source rect in pixels
+function cropToSourceRect(imgW, imgH, crop) {
+  const sx = Math.round(imgW * crop.l / 100);
+  const sy = Math.round(imgH * crop.t / 100);
+  const sw = Math.max(1, Math.round(imgW * (1 - crop.l / 100 - crop.r / 100)));
+  const sh = Math.max(1, Math.round(imgH * (1 - crop.t / 100 - crop.b / 100)));
+  return { sx, sy, sw, sh };
+}
+
 function startAlign3() {
   if (align3Active) { cancelAlign3(); return; }
   if (!rawOld || !rawNew) { alert('Compare PDFs first before aligning.'); return; }
@@ -1912,10 +1995,10 @@ function cancelAlign3() {
 function clearAlign3() {
   const scope = DOM.transformScope.value;
   if (scope === 'all') {
-    pageOffsets = {}; pageScales = {}; pageRotations = {}; pageTransforms = {};
+    pageOffsets = {}; pageScales = {}; pageRotations = {}; pageTransforms = {}; pageCrops = {};
   } else {
     const p = String(currentPage);
-    delete pageOffsets[p]; delete pageScales[p]; delete pageRotations[p]; delete pageTransforms[p];
+    delete pageOffsets[p]; delete pageScales[p]; delete pageRotations[p]; delete pageTransforms[p]; delete pageCrops[p];
   }
   cancelAlign3();
   loadTransformUI();

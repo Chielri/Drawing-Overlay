@@ -82,6 +82,9 @@
   .offset-btn { padding: 4px 8px; border: 1px solid var(--border); border-radius: 5px; background: transparent; color: var(--text-dim); font-family: 'DM Sans', sans-serif; font-size: 10px; cursor: pointer; transition: all 0.15s; }
   .offset-btn:hover { border-color: var(--text-dim); color: var(--text); }
   .offset-btn-row { display: flex; gap: 5px; flex-wrap: wrap; }
+  .crop-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 10px; }
+  .crop-row { display: flex; align-items: center; gap: 4px; }
+  .crop-lbl { font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--text-dim); width: 38px; flex-shrink: 0; }
   .offset-hint { font-size: 10px; color: var(--text-dim); margin-top: 2px; }
   .offset-scope { display: inline-flex; align-items: center; gap: 6px; font-size: 10px; color: var(--text-dim); }
   .offset-scope select { padding: 2px 6px; border: 1px solid var(--border); border-radius: 4px; background: var(--surface2); color: var(--text); font-family: 'DM Sans', sans-serif; font-size: 10px; cursor: pointer; outline: none; }
