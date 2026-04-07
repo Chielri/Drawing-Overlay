@@ -133,6 +133,10 @@ const _tmpCtxA = _tmpCanvasA.getContext('2d');
 const _tmpCtxB = _tmpCanvasB.getContext('2d');
 const _isLittleEndian = new Uint8Array(new Uint32Array([0x01020304]).buffer)[0] === 0x04;
 
+const MAX_CANVAS_DIM = 16384;       // max px per side (Safari limit)
+const MAX_CANVAS_PIXELS = 268435456; // max total pixels
+const RENDER_TIMEOUT_MS = 30000;     // 30s timeout for page.render()
+
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 function isInputFocused() { const t = document.activeElement?.tagName; return t === 'INPUT' || t === 'SELECT' || t === 'TEXTAREA'; }
 function debounce(fn, ms) { let t; return function(...a) { clearTimeout(t); t = setTimeout(() => fn.apply(this, a), ms); }; }
@@ -463,41 +467,52 @@ function getRenderScale() {
   return ppi / 72;
 }
 
+function validateCanvasSize(w, h) {
+  if (w > MAX_CANVAS_DIM || h > MAX_CANVAS_DIM)
+    return `Canvas dimension ${Math.round(Math.max(w, h))}px exceeds browser limit of ${MAX_CANVAS_DIM}px.`;
+  if (w * h > MAX_CANVAS_PIXELS)
+    return `Canvas size ${Math.round(w)}×${Math.round(h)} (${Math.round(w*h/1e6)}M pixels) exceeds safe limit.`;
+  return null;
+}
+
 // ═══════════════════════════════════════
 //  COMPARE
 // ═══════════════════════════════════════
 async function runCompare() {
   if (processing) return;
   processing = true;
-  cacheAbort = true; await sleep(50); cacheAbort = false;
-  DOM.btnCompare.textContent = 'Rendering page 1…';
-  DOM.placeholder.style.display = 'none';
-  DOM.canvasContainer.style.display = 'block';
-  DOM.zoomBar.classList.add('show');
-  DOM.bottomBar.classList.add('show');
-  // Set correct layout for current mode
-  if (mode === 'sidebyside') {
-    DOM.canvasPad.style.display = 'none';
-    DOM.sbsWrapper.style.display = 'flex';
-  } else {
-    DOM.canvasPad.style.display = '';
-    DOM.sbsWrapper.style.display = 'none';
+  try {
+    cacheAbort = true; await sleep(50); cacheAbort = false;
+    DOM.btnCompare.textContent = 'Rendering page 1…';
+    DOM.placeholder.style.display = 'none';
+    DOM.canvasContainer.style.display = 'block';
+    DOM.zoomBar.classList.add('show');
+    DOM.bottomBar.classList.add('show');
+    // Set correct layout for current mode
+    if (mode === 'sidebyside') {
+      DOM.canvasPad.style.display = 'none';
+      DOM.sbsWrapper.style.display = 'flex';
+    } else {
+      DOM.canvasPad.style.display = '';
+      DOM.sbsWrapper.style.display = 'none';
+    }
+    maxPages = Math.max(pdfOld.numPages, pdfNew.numPages);
+    currentPage = 1;
+    const ppi = parseInt(DOM.ppiSelect.value);
+    if (cachePPI !== ppi) { cacheOld = {}; cacheNew = {}; lruOrder = []; lruSet = new Set(); _trackedCacheBytes = 0; }
+    cachePPI = ppi;
+    invalidateRecolor();
+    hasRenderedOnce = false;
+    await renderPage(1);
+    updatePageNav(); updateCacheUI();
+    DOM.cacheTo.value = maxPages;
+    DOM.cacheFrom.max = maxPages;
+    DOM.cacheTo.max = maxPages;
+    rebuildThumbsNow();
+  } finally {
+    DOM.btnCompare.textContent = 'Compare Revisions';
+    processing = false;
   }
-  maxPages = Math.max(pdfOld.numPages, pdfNew.numPages);
-  currentPage = 1;
-  const ppi = parseInt(DOM.ppiSelect.value);
-  if (cachePPI !== ppi) { cacheOld = {}; cacheNew = {}; lruOrder = []; lruSet = new Set(); _trackedCacheBytes = 0; }
-  cachePPI = ppi;
-  invalidateRecolor();
-  hasRenderedOnce = false;
-  await renderPage(1);
-  updatePageNav(); updateCacheUI();
-  DOM.cacheTo.value = maxPages;
-  DOM.cacheFrom.max = maxPages;
-  DOM.cacheTo.max = maxPages;
-  DOM.btnCompare.textContent = 'Compare Revisions';
-  processing = false;
-  rebuildThumbsNow();
 }
 
 // ═══════════════════════════════════════
@@ -626,13 +641,40 @@ async function renderPdfPage(pdf, num) {
   if (!pdf || num > pdf.numPages) return null;
   const page = await pdf.getPage(num);
   const vp = page.getViewport({ scale: getRenderScale() });
+
+  const sizeErr = validateCanvasSize(vp.width, vp.height);
+  if (sizeErr) {
+    alert(`Page ${num} is too large to render at ${DOM.ppiSelect.value} PPI.\n\n${sizeErr}\nTry a lower PPI setting.`);
+    return null;
+  }
+
   const c = document.createElement('canvas');
   c.width = vp.width; c.height = vp.height;
-  // FIX: willReadFrequently hint — tells browser we'll call getImageData
   const ctx = c.getContext('2d', { willReadFrequently: true });
-  ctx.fillStyle = '#fff'; ctx.fillRect(0,0,vp.width,vp.height);
-  await page.render({ canvasContext: ctx, viewport: vp }).promise;
-  const imgData = ctx.getImageData(0,0,vp.width,vp.height);
+  if (!ctx) {
+    alert(`Page ${num}: browser refused canvas context at ${Math.round(vp.width)}×${Math.round(vp.height)}.\nTry a lower PPI setting.`);
+    c.width = 0; c.height = 0;
+    return null;
+  }
+
+  ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, vp.width, vp.height);
+
+  const renderPromise = page.render({ canvasContext: ctx, viewport: vp }).promise;
+  const timeoutPromise = new Promise((_, reject) =>
+    setTimeout(() => reject(new Error('timeout')), RENDER_TIMEOUT_MS)
+  );
+  try {
+    await Promise.race([renderPromise, timeoutPromise]);
+  } catch (e) {
+    const reason = e.message === 'timeout'
+      ? `Rendering page ${num} timed out after ${RENDER_TIMEOUT_MS / 1000}s.`
+      : `Rendering page ${num} failed: ${e.message}`;
+    alert(`${reason}\nTry a lower PPI setting.`);
+    c.width = 0; c.height = 0;
+    return null;
+  }
+
+  const imgData = ctx.getImageData(0, 0, vp.width, vp.height);
   c.width = 0; c.height = 0;
   return imgData;
 }
@@ -690,6 +732,7 @@ function _prepareCtx(canvas, w, h) {
     canvas.width = w; canvas.height = h;
   }
   const ctx = canvas.getContext('2d');
+  if (!ctx) return null;
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.globalAlpha = 1;
   ctx.globalCompositeOperation = 'source-over';
@@ -701,6 +744,7 @@ function putImgToTempCanvas(img, tmpCanvas, tmpCtx) {
   if (tmpCanvas._lastImg === img) return tmpCanvas;
   if (tmpCanvas.width !== img.width) tmpCanvas.width = img.width;
   if (tmpCanvas.height !== img.height) tmpCanvas.height = img.height;
+  if (!tmpCtx) return tmpCanvas;
   tmpCtx.putImageData(img, 0, 0);
   tmpCanvas._lastImg = img;
   return tmpCanvas;
@@ -778,6 +822,7 @@ function composite(w, h, imgO, imgN) {
       const canvasW = Math.ceil(maxX - minX);
       const canvasH = Math.ceil(maxY - minY);
       const ctx = _prepareCtx(out, canvasW, canvasH);
+      if (!ctx) return;
       ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, canvasW, canvasH);
 
       const drawOldLayer = () => {
@@ -806,6 +851,7 @@ function composite(w, h, imgO, imgN) {
     const oldDx = ox<0?absOx:0, oldDy = oy<0?absOy:0;
     const newDx = ox>0?ox:0, newDy = oy>0?oy:0;
     const ctx = _prepareCtx(out, canvasW, canvasH);
+    if (!ctx) return;
     ctx.fillStyle = '#fff'; ctx.fillRect(0,0,canvasW,canvasH);
 
     const drawOldLayer = () => {
@@ -862,6 +908,7 @@ function composite(w, h, imgO, imgN) {
     }
     // Also render to the main output canvas for export
     const ctx = _prepareCtx(out, Math.max(wO, wN), Math.max(hO, hN));
+    if (!ctx) return;
     ctx.fillStyle = '#fff'; ctx.fillRect(0,0,out.width,out.height);
     if (imgO && visOld) { ctx.globalAlpha=aO; ctx.drawImage(cOld,0,0); }
     if (imgN && visNew) { ctx.globalAlpha=aN; ctx.drawImage(cNew,0,0); }
@@ -1066,10 +1113,13 @@ async function changePPI() {
   cachePPI = newPPI;
   DOM.btnCompare.textContent = 'Re-rendering…';
   hasRenderedOnce = false;
-  await sleep(0); // yield so button text update paints
-  await renderPage(currentPage);
-  DOM.btnCompare.textContent = 'Compare Revisions';
-  updateCacheUI();
+  try {
+    await sleep(0); // yield so button text update paints
+    await renderPage(currentPage);
+  } finally {
+    DOM.btnCompare.textContent = 'Compare Revisions';
+    updateCacheUI();
+  }
 }
 
 // ═══════════════════════════════════════
