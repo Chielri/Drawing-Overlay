@@ -1,3 +1,11 @@
+// On file://, Chrome treats each file as a unique security origin and logs
+// "Unsafe attempt to load URL" warnings when PDF.js tries to create a Web Worker.
+// Fix: evaluate the worker code on the main thread so PDF.js uses its built-in
+// fake worker mode (via globalThis.pdfjsWorker) instead of spawning a Worker.
+if (window.location.protocol === 'file:' && window.__pdfWorkerCode) {
+  try { new Function(window.__pdfWorkerCode)(); } catch(e) { console.warn('Worker main-thread init failed:', e); }
+  delete window.__pdfWorkerCode;
+}
 pdfjsLib.GlobalWorkerOptions.workerSrc = window.__pdfWorkerBlobURL;
 
 // ═══════════════════════════════════════
