@@ -24,7 +24,7 @@ function composite(w, h, imgO, imgN) {
     // In alpha mode, alphaMain determines which layer is on top (drawn second)
     const oldFirst = blendMode === 'multiply' || alphaMain === 'new';
 
-    if (xform) {
+    if (xform && imgN) {
       // Affine transform mode: old stays fixed, new is transformed
       // The stored affine already has sN baked into its linear components (a,b,c,d),
       // so we apply it directly without multiplying by sN again.
